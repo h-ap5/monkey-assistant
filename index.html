@@ -4,171 +4,148 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Tampermonkey 백업을 브라우저 안에서 분석해 중복, 버전 문제, 충돌 후보를 정리하는 로컬 도구">
-  <meta name="theme-color" content="#111319">
-  <title>몽키 어시스턴트 — 유저스크립트 정리 도우미</title>
+  <meta name="theme-color" content="#0d1015">
+  <title>몽키 어시스턴트</title>
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <div class="noise" aria-hidden="true"></div>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#overview" aria-label="몽키 어시스턴트 홈">
+        <span class="brand-mark" aria-hidden="true">M</span>
+        <span class="brand-copy">
+          <strong>몽키 어시스턴트</strong>
+          <small>유저스크립트 정리 도우미</small>
+        </span>
+      </a>
 
-  <header class="site-header">
-    <a class="brand" href="#overview" aria-label="몽키 어시스턴트 홈">
-      <span class="brand-mark" aria-hidden="true">M</span>
-      <span class="brand-copy"><strong>몽키 어시스턴트</strong><small>userscript organizer</small></span>
-    </a>
+      <nav class="nav" aria-label="주요 메뉴">
+        <button class="nav-item active" data-view="overview" type="button"><span>⌂</span>한눈에 보기</button>
+        <button class="nav-item" data-view="scripts" type="button"><span>◫</span>스크립트 목록</button>
+        <button class="nav-item" data-view="issues" type="button"><span>◇</span>중복·충돌</button>
+        <button class="nav-item" data-view="settings" type="button"><span>⚙</span>설정</button>
+      </nav>
 
-    <nav class="top-nav" aria-label="주요 메뉴">
-      <button class="nav-item active" data-view="overview">한눈에 보기</button>
-      <button class="nav-item" data-view="scripts">스크립트</button>
-      <button class="nav-item" data-view="issues">중복·충돌</button>
-      <button class="nav-item" data-view="settings">설정</button>
-    </nav>
+      <div class="sidebar-card">
+        <span class="privacy-dot"></span>
+        <div><strong>로컬 분석</strong><small>파일과 코드는 서버로 전송되지 않습니다.</small></div>
+      </div>
+      <div class="sidebar-version">v0.3.0 web</div>
+    </aside>
 
-    <div class="header-actions">
-      <button id="themeToggle" class="icon-button" type="button" aria-label="화면 테마 바꾸기" title="화면 테마 바꾸기">
-        <span class="theme-icon">☾</span>
-      </button>
-      <input id="fileInput" type="file" accept=".zip,.js,.user.js,application/zip,text/javascript" multiple hidden>
-      <button id="importBtn" class="button primary" type="button">파일 불러오기</button>
-    </div>
-  </header>
-
-  <main class="page-shell">
-    <section class="hero" aria-labelledby="heroTitle">
-      <div class="hero-copy">
-        <div class="eyebrow"><span class="live-dot"></span> LOCAL PROCESSING · NO UPLOAD</div>
-        <h1 id="heroTitle">뒤섞인 유저스크립트,<br><em>한눈에 정리하세요.</em></h1>
-        <p>Tampermonkey 백업 ZIP이나 <code>.user.js</code> 파일을 넣으면 이름, 버전, 기능, 작동 사이트를 읽어 완전 중복과 충돌 후보를 찾아드립니다.</p>
-        <div class="hero-actions">
-          <button id="heroImportBtn" class="button primary large" type="button">백업 ZIP 분석하기</button>
-          <button id="exportBtn" class="button secondary large" type="button" disabled>분석 보고서 저장</button>
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar-copy">
+          <h1 id="viewTitle">한눈에 보기</h1>
+          <p id="viewSubtitle">백업 ZIP이나 유저스크립트를 불러오면 중복과 충돌 후보를 정리합니다.</p>
         </div>
-        <div class="privacy-note"><span>✓</span> 파일과 코드는 서버로 전송되지 않고 이 브라우저 안에서만 처리됩니다.</div>
-      </div>
-
-      <div id="dropZone" class="drop-zone" tabindex="0" role="button" aria-label="파일 선택 또는 드롭">
-        <div class="drop-visual">
-          <span class="file-sheet file-sheet-back"></span>
-          <span class="file-sheet file-sheet-front">JS</span>
-          <span class="drop-arrow">↓</span>
+        <div class="top-actions">
+          <button id="themeToggle" class="icon-button" type="button" aria-label="화면 테마 바꾸기" title="화면 테마 바꾸기"><span class="theme-icon">☾</span></button>
+          <input id="fileInput" type="file" accept=".zip,.js,.user.js,application/zip,text/javascript" multiple hidden>
+          <button id="importBtn" class="button primary" type="button">파일 불러오기</button>
+          <button id="exportBtn" class="button secondary" type="button" disabled>보고서 저장</button>
         </div>
-        <strong>여기에 파일을 놓으세요</strong>
-        <span>Tampermonkey 백업 ZIP · 여러 개의 .user.js</span>
-        <small>압축을 풀 필요 없습니다</small>
-      </div>
-    </section>
+      </header>
 
-    <section class="view active" data-view-panel="overview">
-      <div class="section-heading">
-        <div><span class="section-index">01</span><h2 id="viewTitle">한눈에 보기</h2></div>
-        <p id="viewSubtitle">불러온 스크립트와 우선 확인할 문제를 요약합니다.</p>
-      </div>
+      <section id="dropZone" class="drop-zone" tabindex="0" role="button" aria-label="파일 선택 또는 드롭">
+        <div class="drop-icon" aria-hidden="true">⇩</div>
+        <div class="drop-copy">
+          <strong>Tampermonkey 백업 ZIP 또는 .user.js 파일을 놓으세요</strong>
+          <span>ZIP은 압축을 풀지 않아도 됩니다. 안의 유저스크립트만 골라 읽습니다.</span>
+        </div>
+        <span class="drop-action">선택하기</span>
+      </section>
 
-      <div class="stats-grid">
-        <article class="stat-card scripts"><span>불러온 스크립트</span><strong id="statScripts">0</strong><small>개</small></article>
-        <article class="stat-card exact"><span>완전 중복</span><strong id="statExact">0</strong><small>건</small></article>
-        <article class="stat-card version"><span>버전 확인</span><strong id="statVersion">0</strong><small>건</small></article>
-        <article class="stat-card conflict"><span>중복·충돌 후보</span><strong id="statConflict">0</strong><small>건</small></article>
-      </div>
+      <section class="view active" data-view-panel="overview">
+        <div class="stats-grid">
+          <article class="stat-card"><span>불러온 스크립트</span><div><strong id="statScripts">0</strong><small>개</small></div></article>
+          <article class="stat-card"><span>완전 중복</span><div><strong id="statExact">0</strong><small>건</small></div></article>
+          <article class="stat-card"><span>버전 확인</span><div><strong id="statVersion">0</strong><small>건</small></div></article>
+          <article class="stat-card"><span>중복·충돌 후보</span><div><strong id="statConflict">0</strong><small>건</small></div></article>
+        </div>
 
-      <div class="dashboard-grid">
-        <article class="panel priority-panel">
+        <div class="dashboard-grid">
+          <article class="panel priority-panel">
+            <div class="panel-head">
+              <div><h2>우선 확인할 항목</h2><p>정확도가 높은 문제부터 보여줍니다.</p></div>
+              <button class="text-button" data-jump="issues" type="button">전체 보기</button>
+            </div>
+            <div id="priorityIssues" class="issue-list empty-message">아직 분석할 스크립트가 없습니다.</div>
+          </article>
+
+          <article class="panel domain-panel">
+            <div class="panel-head"><div><h2>사이트별 분포</h2><p>어느 사이트용 스크립트가 많은지 확인합니다.</p></div></div>
+            <div id="domainChart" class="bar-list empty-message">데이터가 없습니다.</div>
+          </article>
+        </div>
+
+        <article class="panel recent-panel">
           <div class="panel-head">
-            <div><span class="kicker">PRIORITY</span><h3>우선 확인할 항목</h3><p>정확도가 높은 문제부터 보여줍니다.</p></div>
-            <button class="text-button" data-jump="issues" type="button">전체 보기 →</button>
+            <div><h2>최근 불러온 스크립트</h2><p>카드를 눌러 기능 요약과 코드 미리보기를 확인하세요.</p></div>
+            <button class="text-button" data-jump="scripts" type="button">전체 보기</button>
           </div>
-          <div id="priorityIssues" class="issue-list empty-message">아직 분석할 스크립트가 없습니다.</div>
+          <div id="recentScripts" class="script-grid empty-message">불러온 스크립트가 없습니다.</div>
         </article>
+      </section>
 
-        <article class="panel domain-panel">
-          <div class="panel-head"><div><span class="kicker">SITES</span><h3>사이트별 분포</h3><p>어느 사이트용 스크립트가 많은지 확인합니다.</p></div></div>
-          <div id="domainChart" class="bar-list empty-message">데이터가 없습니다.</div>
+      <section class="view" data-view-panel="scripts">
+        <article class="panel toolbar-panel">
+          <div class="search-wrap"><span>⌕</span><input id="scriptSearch" type="search" placeholder="이름, 기능, 사이트, 권한으로 검색"></div>
+          <select id="domainFilter" aria-label="사이트 필터"><option value="">모든 사이트</option></select>
+          <select id="riskFilter" aria-label="상태 필터">
+            <option value="">모든 상태</option>
+            <option value="exact">완전 중복</option>
+            <option value="version">버전 문제</option>
+            <option value="conflict">충돌 후보</option>
+            <option value="clean">특이사항 없음</option>
+          </select>
+          <span id="scriptCountLabel" class="count-label">0개</span>
         </article>
-      </div>
+        <div id="scriptList" class="script-list empty-message">불러온 스크립트가 없습니다.</div>
+      </section>
 
-      <article class="panel recent-panel">
-        <div class="panel-head">
-          <div><span class="kicker">LIBRARY</span><h3>최근 불러온 스크립트</h3><p>카드를 눌러 상세 분석과 코드 미리보기를 확인하세요.</p></div>
-          <button class="text-button" data-jump="scripts" type="button">전체 보기 →</button>
+      <section class="view" data-view-panel="issues">
+        <div class="issue-tabs" role="tablist" aria-label="문제 유형">
+          <button class="issue-tab active" data-issue-filter="all" type="button">전체</button>
+          <button class="issue-tab" data-issue-filter="exact" type="button">완전 중복</button>
+          <button class="issue-tab" data-issue-filter="version" type="button">버전 문제</button>
+          <button class="issue-tab" data-issue-filter="overlap" type="button">기능 중복</button>
+          <button class="issue-tab" data-issue-filter="conflict" type="button">충돌 가능성</button>
         </div>
-        <div id="recentScripts" class="script-grid empty-message">불러온 스크립트가 없습니다.</div>
-      </article>
-    </section>
+        <div id="issueList" class="issue-list large empty-message">분석 결과가 없습니다.</div>
+      </section>
 
-    <section class="view" data-view-panel="scripts">
-      <div class="section-heading">
-        <div><span class="section-index">02</span><h2>스크립트 목록</h2></div>
-        <p>이름, 기능, 사이트, 권한과 위험 신호를 검색합니다.</p>
-      </div>
-      <article class="panel toolbar-panel">
-        <div class="search-wrap"><span>⌕</span><input id="scriptSearch" type="search" placeholder="이름, 기능, 사이트, 권한으로 검색"></div>
-        <select id="domainFilter" aria-label="사이트 필터"><option value="">모든 사이트</option></select>
-        <select id="riskFilter" aria-label="상태 필터">
-          <option value="">모든 상태</option>
-          <option value="exact">완전 중복</option>
-          <option value="version">버전 문제</option>
-          <option value="conflict">충돌 후보</option>
-          <option value="clean">특이사항 없음</option>
-        </select>
-        <span id="scriptCountLabel" class="count-label">0개</span>
-      </article>
-      <div id="scriptList" class="script-list empty-message">불러온 스크립트가 없습니다.</div>
-    </section>
-
-    <section class="view" data-view-panel="issues">
-      <div class="section-heading">
-        <div><span class="section-index">03</span><h2>중복·충돌</h2></div>
-        <p>완전히 같은 복사본부터 기능 유사 후보까지 단계별로 확인합니다.</p>
-      </div>
-      <div class="issue-tabs" role="tablist" aria-label="문제 유형">
-        <button class="issue-tab active" data-issue-filter="all" type="button">전체</button>
-        <button class="issue-tab" data-issue-filter="exact" type="button">완전 중복</button>
-        <button class="issue-tab" data-issue-filter="version" type="button">버전 문제</button>
-        <button class="issue-tab" data-issue-filter="overlap" type="button">기능 중복</button>
-        <button class="issue-tab" data-issue-filter="conflict" type="button">충돌 가능성</button>
-      </div>
-      <div id="issueList" class="issue-list large empty-message">분석 결과가 없습니다.</div>
-    </section>
-
-    <section class="view" data-view-panel="settings">
-      <div class="section-heading">
-        <div><span class="section-index">04</span><h2>설정</h2></div>
-        <p>분석 민감도와 로컬 저장 데이터를 관리합니다.</p>
-      </div>
-      <div class="settings-grid">
-        <article class="panel">
-          <span class="kicker">ANALYSIS</span><h3>분석 설정</h3>
-          <label class="check-row"><input id="ignoreDisabled" type="checkbox"><span><strong>비활성 스크립트는 비교에서 제외</strong><small>백업에 활성 상태 정보가 있을 때만 적용됩니다.</small></span></label>
-          <label class="range-row"><span><strong>기능 중복 민감도</strong><small>낮추면 더 많은 유사 후보를 표시합니다.</small></span><input id="similarityThreshold" type="range" min="35" max="80" value="52"><b id="thresholdValue">52%</b></label>
-          <button id="reanalyzeBtn" class="button secondary full" type="button">현재 설정으로 다시 분석</button>
-        </article>
-        <article class="panel">
-          <span class="kicker">DATA</span><h3>데이터 관리</h3>
-          <p class="hint">불러온 코드와 분석 결과는 이 브라우저의 IndexedDB에만 저장됩니다.</p>
-          <button id="clearDataBtn" class="button danger full" type="button">불러온 데이터 전부 지우기</button>
-        </article>
-        <article class="panel about-panel">
-          <span class="kicker">ABOUT</span><h3>현재 버전</h3>
-          <dl class="info-list">
-            <div><dt>버전</dt><dd>0.2.0 web</dd></div>
-            <div><dt>외부 API</dt><dd>사용하지 않음</dd></div>
-            <div><dt>분석 위치</dt><dd>브라우저 내부</dd></div>
-            <div><dt>지원 파일</dt><dd>ZIP, .user.js</dd></div>
-          </dl>
-        </article>
-      </div>
-    </section>
-  </main>
-
-  <footer class="site-footer">
-    <span>MONKEY ASSISTANT / 2026</span>
-    <span>All processing stays in this browser.</span>
-  </footer>
+      <section class="view" data-view-panel="settings">
+        <div class="settings-grid">
+          <article class="panel">
+            <h2>분석 설정</h2>
+            <label class="check-row"><input id="ignoreDisabled" type="checkbox"><span><strong>비활성 스크립트는 비교에서 제외</strong><small>백업에 활성 상태 정보가 있을 때만 적용됩니다.</small></span></label>
+            <label class="range-row"><span><strong>기능 중복 민감도</strong><small>낮추면 더 많은 유사 후보를 표시합니다.</small></span><input id="similarityThreshold" type="range" min="35" max="80" value="52"><b id="thresholdValue">52%</b></label>
+            <button id="reanalyzeBtn" class="button secondary full" type="button">현재 설정으로 다시 분석</button>
+          </article>
+          <article class="panel">
+            <h2>데이터 관리</h2>
+            <p class="hint">불러온 코드와 분석 결과는 이 브라우저의 IndexedDB에만 저장됩니다.</p>
+            <button id="clearDataBtn" class="button danger full" type="button">불러온 데이터 전부 지우기</button>
+          </article>
+          <article class="panel about-panel">
+            <h2>현재 버전</h2>
+            <dl class="info-list">
+              <div><dt>버전</dt><dd>0.3.0 web</dd></div>
+              <div><dt>외부 API</dt><dd>사용하지 않음</dd></div>
+              <div><dt>분석 위치</dt><dd>브라우저 내부</dd></div>
+              <div><dt>지원 파일</dt><dd>ZIP, .user.js</dd></div>
+            </dl>
+          </article>
+        </div>
+      </section>
+    </main>
+  </div>
 
   <dialog id="scriptDialog" class="script-dialog">
     <div class="dialog-head">
-      <div><span class="kicker">SCRIPT DETAIL</span><h2 id="dialogTitle"></h2><p id="dialogMeta"></p></div>
+      <div><span class="dialog-label">SCRIPT DETAIL</span><h2 id="dialogTitle"></h2><p id="dialogMeta"></p></div>
       <button id="dialogClose" class="icon-button" type="button" aria-label="닫기">×</button>
     </div>
     <div id="dialogBody"></div>
@@ -180,7 +157,7 @@
 
   <aside id="chatWidget" class="chat-widget" aria-label="상담 어시스턴트" aria-hidden="true">
     <header class="chat-header">
-      <div class="assistant-profile"><span class="assistant-avatar">M</span><div><strong>몽키 어시스턴트</strong><small><i></i> 로컬 상담 중</small></div></div>
+      <div class="assistant-profile"><span class="assistant-avatar">M</span><div><strong>몽키 어시스턴트</strong><small><i></i> 현재 분석 결과 상담</small></div></div>
       <div class="chat-header-actions">
         <button id="chatSettingsBtn" class="mini-icon" type="button" title="말투 설정" aria-label="말투 설정">⚙</button>
         <button id="chatCloseBtn" class="mini-icon" type="button" title="닫기" aria-label="닫기">×</button>
@@ -208,12 +185,11 @@
       <textarea id="chatInput" rows="1" placeholder="스크립트 구성에 대해 물어보세요"></textarea>
       <button class="send-button" type="submit" aria-label="보내기">↑</button>
     </form>
-    <div class="chat-foot">API 없이 현재 불러온 데이터만 보고 답합니다.</div>
+    <div class="chat-foot">API 없이 불러온 데이터만 보고 답합니다.</div>
   </aside>
 
   <div id="toast" class="toast" role="status"></div>
 
-  <script src="vendor/jszip.min.js"></script>
-  <script src="app.js"></script>
+  <script src="app.bundle.js"></script>
 </body>
 </html>
