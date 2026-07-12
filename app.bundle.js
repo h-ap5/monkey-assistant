@@ -17,7 +17,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
   const DB_NAME = 'monkey-assistant-web';
   const DB_STORE = 'state';
   const DEFAULT_SETTINGS = {
-    tone: 'default', intensity: 'light', title: '', customEnding: '', theme: 'dark',
+    tone: 'default', intensity: 'light', title: '', customEnding: '', theme: (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'),
     ignoreDisabled: false, similarityThreshold: 52
   };
 
