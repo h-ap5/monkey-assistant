@@ -18,21 +18,18 @@ https://github.com/nodeca/pako/blob/main/LICENSE
   const DB_NAME = 'monkey-assistant-web';
   const DB_STORE = 'state';
   const DEFAULT_SETTINGS = {
-    settingsRevision: 4,
+    settingsRevision: 5,
     tone: 'cat', intensity: 'light', title: '', customEnding: '', theme: (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'),
     ignoreDisabled: false, similarityThreshold: 52,
-    apiProvider: 'local', apiModel: 'gpt-5-mini', apiEndpoint: '', apiKey: '', rememberApiKey: false, shareCodeWithAi: false
+    apiProvider: 'local', apiModel: 'gemini-2.5-flash-lite', apiEndpoint: '', apiKey: '', rememberApiKey: false, shareCodeWithAi: false
   };
 
   const PROVIDER_DEFAULTS = {
     local: { model: '', endpoint: '' },
-    openai: { model: 'gpt-5-mini', endpoint: 'https://api.openai.com/v1/responses' },
-    gemini: { model: 'gemini-3.5-flash', endpoint: 'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent' },
-    anthropic: { model: 'claude-sonnet-5', endpoint: 'https://api.anthropic.com/v1/messages' },
-    compatible: { model: '', endpoint: '' }
+    gemini: { model: 'gemini-2.5-flash-lite', endpoint: 'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent' }
   };
 
-  const PROVIDER_LABELS = { local:'로컬 상담', openai:'OpenAI', gemini:'Gemini', anthropic:'Claude', compatible:'OpenAI 호환 API' };
+  const PROVIDER_LABELS = { local:'로컬 상담', gemini:'Gemini' };
 
   const tonePresets = {
     default: '기본체', casual: '친근한 반말', polite: '정중한 존댓말',
@@ -516,9 +513,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         `선택자: ${s.signals.selectors.slice(0,10).join(', ') || '없음'}`,
         `위험 표시: ${s.risks.join(', ') || '없음'}`
       ].join('\n');
-      if (!state.settings.shareCodeWithAi) return base;
-      const snippet = s.code.slice(0, Math.max(1200, Math.floor(12000 / Math.max(1,relevant.length))));
-      return `${base}\n코드 일부:\n\`\`\`javascript\n${snippet}\n\`\`\``;
+      return base;
     }).join('\n\n');
     return `전체 요약\n- 스크립트: ${state.scripts.length}개\n- 완전 중복: ${exact.length}건\n- 버전 문제: ${versions.length}건\n- 기능 중복: ${overlaps.length}건\n- 충돌 후보: ${conflicts.length}건\n\n문제 목록\n${issueText}\n\n질문 관련 스크립트\n${scriptText || '없음'}`;
   }
@@ -571,60 +566,26 @@ ${getToneInstruction(state.settings.tone, state.settings.intensity, state.settin
   async function callAiProvider(question, {testOnly=false} = {}) {
     const provider = state.settings.apiProvider;
     const key = state.settings.apiKey.trim();
-    const model = state.settings.apiModel.trim();
-    if (provider === 'local') throw new Error('로컬 모드입니다.');
-    if (!key) throw new Error('API 키를 입력해 주세요.');
-    if (!model) throw new Error('모델 ID를 입력해 주세요.');
+    const model = 'gemini-2.5-flash-lite';
+    if (provider !== 'gemini') throw new Error('로컬 모드입니다.');
+    if (!key) throw new Error('Gemini API 키를 입력해 주세요.');
     const system = testOnly ? '연결 확인용 요청이다. 한국어로 “연결 성공”만 답한다.' : buildSystemPrompt();
     const messages = testOnly ? [{role:'user',content:'연결을 확인해줘.'}] : getRecentApiMessages(question);
-    let response;
-    if (provider === 'openai') {
-      response = await fetchWithTimeout('https://api.openai.com/v1/responses', {
-        method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},
-        body:JSON.stringify({model, instructions:system, input:messages.map(m=>({role:m.role,content:[{type:'input_text',text:m.content}]})), max_output_tokens:testOnly?40:2200})
-      });
-      if (!response.ok) throw await parseApiError(response);
-      const text = extractOpenAiText(await response.json());
-      if (!text) throw new Error('API 응답에서 텍스트를 찾지 못했습니다.');
-      return text;
-    }
-    if (provider === 'anthropic') {
-      response = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
-        method:'POST', headers:{'Content-Type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-        body:JSON.stringify({model, max_tokens:testOnly?80:2200, system, messages:messages.map(m=>({role:m.role==='assistant'?'assistant':'user',content:m.content}))})
-      });
-      if (!response.ok) throw await parseApiError(response);
-      const data = await response.json();
-      const text = (data.content || []).filter(x=>x.type==='text').map(x=>x.text).join('\n').trim();
-      if (!text) throw new Error('API 응답에서 텍스트를 찾지 못했습니다.');
-      return text;
-    }
-    if (provider === 'gemini') {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
-      response = await fetchWithTimeout(url, {
-        method:'POST', headers:{'Content-Type':'application/json','x-goog-api-key':key},
-        body:JSON.stringify({systemInstruction:{parts:[{text:system}]},contents:messages.map(m=>({role:m.role==='assistant'?'model':'user',parts:[{text:m.content}]})),generationConfig:{maxOutputTokens:testOnly?80:2200}})
-      });
-      if (!response.ok) throw await parseApiError(response);
-      const data = await response.json();
-      const text = (data.candidates?.[0]?.content?.parts || []).map(x=>x.text||'').join('\n').trim();
-      if (!text) throw new Error(data.promptFeedback?.blockReason ? `요청이 차단되었습니다: ${data.promptFeedback.blockReason}` : 'API 응답에서 텍스트를 찾지 못했습니다.');
-      return text;
-    }
-    if (provider === 'compatible') {
-      const endpoint = state.settings.apiEndpoint.trim();
-      if (!endpoint) throw new Error('OpenAI 호환 API 주소를 입력해 주세요.');
-      response = await fetchWithTimeout(endpoint, {
-        method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},
-        body:JSON.stringify({model,messages:[{role:'system',content:system},...messages],max_tokens:testOnly?80:2200})
-      });
-      if (!response.ok) throw await parseApiError(response);
-      const data = await response.json();
-      const text = data.choices?.[0]?.message?.content?.trim();
-      if (!text) throw new Error('API 응답에서 텍스트를 찾지 못했습니다.');
-      return text;
-    }
-    throw new Error('지원하지 않는 API 방식입니다.');
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+    const response = await fetchWithTimeout(url, {
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-goog-api-key':key},
+      body:JSON.stringify({
+        systemInstruction:{parts:[{text:system}]},
+        contents:messages.map(m=>({role:m.role==='assistant'?'model':'user',parts:[{text:m.content}]})),
+        generationConfig:{maxOutputTokens:testOnly?80:2200,temperature:testOnly?0:0.45}
+      })
+    });
+    if (!response.ok) throw await parseApiError(response);
+    const data = await response.json();
+    const text = (data.candidates?.[0]?.content?.parts || []).map(x=>x.text||'').join('\n').trim();
+    if (!text) throw new Error(data.promptFeedback?.blockReason ? `요청이 차단되었습니다: ${data.promptFeedback.blockReason}` : 'API 응답에서 텍스트를 찾지 못했습니다.');
+    return text;
   }
 
   function inlineMarkdown(text) {
@@ -669,17 +630,16 @@ ${getToneInstruction(state.settings.tone, state.settings.intensity, state.settin
   }
 
   function updateApiSettingsUI() {
-    const provider=$('#assistantProvider').value;
-    const isLocal=provider==='local';
-    $('#apiModelRow').hidden=isLocal;
-    $('#apiKeyRow').hidden=isLocal;
-    $('#apiEndpointRow').hidden=provider!=='compatible';
-    $('#rememberApiKey').closest('label').hidden=isLocal;
-    $('#shareCodeWithAi').closest('label').hidden=isLocal;
-    $('#testApiBtn').hidden=isLocal;
-    const label=PROVIDER_LABELS[provider] || provider;
-    setApiStatus(isLocal?'로컬 모드':`${label} · 연결 전`);
-    $('#chatFoot').textContent=isLocal?'로컬 분석 모드 · 파일은 브라우저 밖으로 나가지 않습니다.':`${label} 직접 연결 · 선택한 분석 정보가 API 업체로 전송됩니다.`;
+    const enabled = state.settings.apiProvider === 'gemini';
+    const toggle = $('#useGeminiApi');
+    if (toggle) toggle.checked = enabled;
+    $('#apiKeyRow').hidden = !enabled;
+    $('#rememberApiKey').closest('label').hidden = !enabled;
+    $('#testApiBtn').hidden = !enabled;
+    setApiStatus(enabled ? (state.settings.apiKey ? '키 입력됨 · 연결 전' : 'API 키 필요') : '로컬 모드');
+    $('#chatFoot').textContent = enabled
+      ? 'Gemini 2.5 Flash-Lite 직접 연결 · 분석 요약이 Google API로 전송됩니다.'
+      : '로컬 분석 모드 · 파일은 브라우저 밖으로 나가지 않습니다.';
   }
 
   function answerQuestion(question) {
@@ -828,7 +788,7 @@ ${getToneInstruction(state.settings.tone, state.settings.intensity, state.settin
   function renderChatHistory() {
     const container = $('#chatMessages');
     container.innerHTML = '';
-    appendChat('assistant','## 반갑다냥\n파일을 불러온 뒤 아래처럼 물어보면 된다냥.\n\n- **뭐가 중복이야?**\n- **구버전 같이 켠 거 있어?**\n- **충돌 위험 높은 것만 알려줘**\n\n오른쪽 위 ⚙에서 개인 API 키와 말투를 설정할 수 있다냥.',false);
+    appendChat('assistant','## 안녕하다냥!\n파일을 불러오면 **중복·구버전·충돌 후보**를 같이 정리해준다냥.\n\n아래 빠른 질문을 누르거나 궁금한 걸 바로 물어보라냥. 오른쪽 위 ⚙에서는 Gemini API 키와 말투를 바꿀 수 있다냥.',false);
     for (const m of state.chatHistory || []) appendChat(m.role, m.text, false);
   }
 
@@ -894,10 +854,13 @@ ${getToneInstruction(state.settings.tone, state.settings.intensity, state.settin
         state = saved;
         const oldRevision = Number(state.settings?.settingsRevision || 0);
         state.settings = {...DEFAULT_SETTINGS, ...(state.settings || {})};
-        if (oldRevision < 4) {
+        if (oldRevision < 5) {
           state.settings.tone='cat';
           state.settings.intensity='light';
-          state.settings.settingsRevision=4;
+          state.settings.apiProvider=['local','gemini'].includes(state.settings.apiProvider) ? state.settings.apiProvider : 'local';
+          state.settings.apiModel='gemini-2.5-flash-lite';
+          state.settings.shareCodeWithAi=false;
+          state.settings.settingsRevision=5;
         }
         state.chatHistory ||= [];
         state.scripts ||= [];
@@ -986,8 +949,15 @@ ${getToneInstruction(state.settings.tone, state.settings.intensity, state.settin
     $$('.issue-tab').forEach(b=>b.addEventListener('click',()=>{ $$('.issue-tab').forEach(x=>x.classList.remove('active')); b.classList.add('active'); renderIssues(b.dataset.issueFilter); }));
 
     const widget=$('#chatWidget');
-    const setChatOpen=open=>{widget.classList.toggle('open',open);widget.setAttribute('aria-hidden',String(!open));if(open)setTimeout(()=>$('#chatInput').focus(),80);};
-    $('#chatLauncher').addEventListener('click',()=>setChatOpen(!widget.classList.contains('open')));
+    const launcher=$('#chatLauncher');
+    const setChatOpen=open=>{
+      widget.classList.toggle('open',open);
+      widget.setAttribute('aria-hidden',String(!open));
+      launcher.classList.toggle('is-hidden',open);
+      launcher.setAttribute('aria-hidden',String(open));
+      if(open)setTimeout(()=>$('#chatInput').focus(),80);
+    };
+    launcher.addEventListener('click',()=>setChatOpen(!widget.classList.contains('open')));
     $('#chatCloseBtn').addEventListener('click',()=>setChatOpen(false));
     $('#chatSettingsBtn').addEventListener('click',()=>{const box=$('#chatSettings');const open=!box.classList.contains('open');box.classList.toggle('open',open);box.setAttribute('aria-hidden',String(!open));});
     $('.quick-prompts').addEventListener('click',e=>{ if(e.target.tagName==='BUTTON'){ $('#chatInput').value=e.target.textContent; $('#chatForm').requestSubmit(); }});
@@ -1030,26 +1000,17 @@ ${base}`);
         saveState();
       });
     }
-    $('#assistantProvider').addEventListener('change',()=>{
-      const provider=$('#assistantProvider').value;
-      state.settings.apiProvider=provider;
-      const defaults=PROVIDER_DEFAULTS[provider];
-      state.settings.apiModel=defaults.model;
-      state.settings.apiEndpoint=defaults.endpoint;
-      $('#assistantApiModel').value=state.settings.apiModel;
-      $('#assistantApiEndpoint').value=state.settings.apiEndpoint;
+    $('#useGeminiApi').addEventListener('change',e=>{
+      state.settings.apiProvider=e.target.checked?'gemini':'local';
+      state.settings.apiModel='gemini-2.5-flash-lite';
       updateApiSettingsUI(); saveState();
     });
-    $('#assistantApiModel').addEventListener('input',e=>{state.settings.apiModel=e.target.value;saveState();});
-    $('#assistantApiEndpoint').addEventListener('input',e=>{state.settings.apiEndpoint=e.target.value;saveState();});
     $('#assistantApiKey').addEventListener('input',e=>{state.settings.apiKey=e.target.value;sessionStorage.setItem(SESSION_API_KEY,e.target.value);setApiStatus(e.target.value?'키 입력됨 · 연결 전':'API 키 필요');saveState();});
     $('#rememberApiKey').addEventListener('change',e=>{state.settings.rememberApiKey=e.target.checked;saveState();});
-    $('#shareCodeWithAi').addEventListener('change',e=>{state.settings.shareCodeWithAi=e.target.checked;saveState();});
     $('#apiKeyToggle').addEventListener('click',()=>{const input=$('#assistantApiKey');const show=input.type==='password';input.type=show?'text':'password';$('#apiKeyToggle').textContent=show?'숨김':'보기';});
     $('#testApiBtn').addEventListener('click',async()=>{
       state.settings.apiKey=$('#assistantApiKey').value;
-      state.settings.apiModel=$('#assistantApiModel').value;
-      state.settings.apiEndpoint=$('#assistantApiEndpoint').value;
+      state.settings.apiModel='gemini-2.5-flash-lite';
       setApiStatus('연결 확인 중…'); $('#testApiBtn').disabled=true;
       try { await callAiProvider('연결 확인',{testOnly:true}); setApiStatus(`${PROVIDER_LABELS[state.settings.apiProvider]} · 연결 성공`,'ok'); toast('API 연결에 성공했습니다.'); }
       catch(err){console.error(err);setApiStatus(`실패 · ${err.message}`,'error');toast('API 연결에 실패했습니다.');}
@@ -1070,12 +1031,11 @@ ${base}`);
     $('#assistantTitle').value=state.settings.title;
     $('#assistantCustomEnding').value=state.settings.customEnding || '';
     $('#customEndingRow').hidden=state.settings.tone !== 'custom';
-    $('#assistantProvider').value=state.settings.apiProvider || 'local';
-    $('#assistantApiModel').value=state.settings.apiModel || '';
-    $('#assistantApiEndpoint').value=state.settings.apiEndpoint || '';
+    state.settings.apiModel='gemini-2.5-flash-lite';
+    if (!['local','gemini'].includes(state.settings.apiProvider)) state.settings.apiProvider='local';
+    $('#useGeminiApi').checked=state.settings.apiProvider === 'gemini';
     $('#assistantApiKey').value=state.settings.apiKey || '';
     $('#rememberApiKey').checked=Boolean(state.settings.rememberApiKey);
-    $('#shareCodeWithAi').checked=Boolean(state.settings.shareCodeWithAi);
     updateApiSettingsUI();
     $('#ignoreDisabled').checked=state.settings.ignoreDisabled;
     $('#similarityThreshold').value=state.settings.similarityThreshold;
