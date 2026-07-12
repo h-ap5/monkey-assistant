@@ -14,12 +14,25 @@ https://github.com/nodeca/pako/blob/main/LICENSE
   'use strict';
 
   const STORAGE_KEY = 'monkeyAssistantStateV3';
+  const SESSION_API_KEY = 'monkeyAssistantSessionApiKey';
   const DB_NAME = 'monkey-assistant-web';
   const DB_STORE = 'state';
   const DEFAULT_SETTINGS = {
-    tone: 'default', intensity: 'light', title: '', customEnding: '', theme: (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'),
-    ignoreDisabled: false, similarityThreshold: 52
+    settingsRevision: 4,
+    tone: 'cat', intensity: 'light', title: '', customEnding: '', theme: (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'),
+    ignoreDisabled: false, similarityThreshold: 52,
+    apiProvider: 'local', apiModel: 'gpt-5-mini', apiEndpoint: '', apiKey: '', rememberApiKey: false, shareCodeWithAi: false
   };
+
+  const PROVIDER_DEFAULTS = {
+    local: { model: '', endpoint: '' },
+    openai: { model: 'gpt-5-mini', endpoint: 'https://api.openai.com/v1/responses' },
+    gemini: { model: 'gemini-3.5-flash', endpoint: 'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent' },
+    anthropic: { model: 'claude-sonnet-5', endpoint: 'https://api.anthropic.com/v1/messages' },
+    compatible: { model: '', endpoint: '' }
+  };
+
+  const PROVIDER_LABELS = { local:'로컬 상담', openai:'OpenAI', gemini:'Gemini', anthropic:'Claude', compatible:'OpenAI 호환 API' };
 
   const tonePresets = {
     default: '기본체', casual: '친근한 반말', polite: '정중한 존댓말',
@@ -457,6 +470,218 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     return `${(n/1024/1024).toFixed(1)} MB`;
   }
 
+  function getToneInstruction(preset, intensity = 'light', title = '', customEnding = '') {
+    const strength = intensity === 'strong' ? '거의 모든 문장' : intensity === 'medium' ? '주요 문장 절반 이상' : '문단 끝과 핵심 문장 일부';
+    const who = title.trim() ? `사용자를 “${title.trim()}”라고 부른다.` : '';
+    const map = {
+      default: '자연스럽고 명료한 기본 한국어로 답한다.',
+      casual: '친근한 반말로 답한다.', polite: '부드러운 존댓말로 답한다.',
+      cat: `${strength}에 자연스럽게 “~냥”, “~다냥”, “~해보라냥”을 섞는다. 억지로 모든 단어에 냥을 붙이지 않는다.`,
+      court: `${strength}에 간신처럼 과장된 궁중 존대를 섞되 분석 내용은 정확하게 유지한다.`,
+      military: '간결하고 단정한 군대식 보고체로 답한다.',
+      maid: '상냥한 메이드체로 답한다.', blunt: '감정 과잉 없이 단정한 전문가체로 답한다.',
+      custom: customEnding ? `${strength}의 문장 끝에 “${customEnding.replace(/^~/,'')}” 말버릇을 자연스럽게 붙인다.` : '자연스러운 기본체로 답한다.'
+    };
+    return `${map[preset] || map.default} ${who}`.trim();
+  }
+
+  function relevantScriptsForQuestion(question, limit = 10) {
+    const q = question.toLowerCase();
+    const tokens = q.split(/[^\p{L}\p{N}_.-]+/u).filter(x => x.length >= 2);
+    return state.scripts.map(s => {
+      const hay = [s.meta.name, s.summary, ...s.domains, ...s.signals.features, ...s.signals.hooks, ...s.signals.storageKeys, ...s.signals.selectors.slice(0,12)].join(' ').toLowerCase();
+      let score = tokens.reduce((n,t)=>n+(hay.includes(t)?3:0),0);
+      if (q.includes(s.meta.name.toLowerCase()) || s.meta.name.toLowerCase().includes(q)) score += 12;
+      if (s.risks?.length) score += 1;
+      return {s,score};
+    }).sort((a,b)=>b.score-a.score || a.s.meta.name.localeCompare(b.s.meta.name,'ko')).slice(0,limit).map(x=>x.s);
+  }
+
+  function buildAiContext(question) {
+    const exact = state.issues.filter(i=>i.type==='exact');
+    const versions = state.issues.filter(i=>i.type==='version');
+    const overlaps = state.issues.filter(i=>i.type==='overlap');
+    const conflicts = state.issues.filter(i=>i.type==='conflict');
+    const relevant = relevantScriptsForQuestion(question, 10);
+    const issueText = state.issues.slice(0,24).map((i,n)=>`${n+1}. [${i.type}] ${i.title}: ${i.detail}`).join('\n') || '없음';
+    const scriptText = relevant.map((s,n)=>{
+      const base = [
+        `${n+1}. ${s.meta.name} (${s.meta.version})`,
+        `파일: ${s.fileName}`,
+        `사이트: ${s.domains.join(', ')}`,
+        `요약: ${s.summary}`,
+        `감지 기능: ${s.signals.features.join(', ') || '없음'}`,
+        `후킹: ${s.signals.hooks.join(', ') || '없음'}`,
+        `저장 키: ${s.signals.storageKeys.slice(0,10).join(', ') || '없음'}`,
+        `선택자: ${s.signals.selectors.slice(0,10).join(', ') || '없음'}`,
+        `위험 표시: ${s.risks.join(', ') || '없음'}`
+      ].join('\n');
+      if (!state.settings.shareCodeWithAi) return base;
+      const snippet = s.code.slice(0, Math.max(1200, Math.floor(12000 / Math.max(1,relevant.length))));
+      return `${base}\n코드 일부:\n\`\`\`javascript\n${snippet}\n\`\`\``;
+    }).join('\n\n');
+    return `전체 요약\n- 스크립트: ${state.scripts.length}개\n- 완전 중복: ${exact.length}건\n- 버전 문제: ${versions.length}건\n- 기능 중복: ${overlaps.length}건\n- 충돌 후보: ${conflicts.length}건\n\n문제 목록\n${issueText}\n\n질문 관련 스크립트\n${scriptText || '없음'}`;
+  }
+
+  function buildSystemPrompt() {
+    return `너는 “몽키 어시스턴트”라는 Tampermonkey 유저스크립트 정리 상담원이다.
+사용자가 불러온 정적 분석 자료만 근거로 답한다. 확실하지 않은 것은 추정이라고 분명히 표시한다.
+삭제를 바로 지시하지 말고, 먼저 비활성화 후 실제 사이트 동작을 확인하도록 권한다.
+응답은 한국어 Markdown으로 작성하며 모바일 채팅창에서 읽기 쉽게 구성한다.
+- 첫 줄은 반드시 “## 결론” 또는 질문에 맞는 짧은 2단계 제목으로 시작한다.
+- 긴 벽글을 쓰지 말고 2~4개 짧은 섹션과 목록으로 나눈다.
+- 스크립트 이름은 **굵게** 표시한다.
+- 한 문단은 3문장 이내로 제한한다.
+- 필요할 때만 코드 블록을 쓴다.
+${getToneInstruction(state.settings.tone, state.settings.intensity, state.settings.title, state.settings.customEnding)}`;
+  }
+
+  function getRecentApiMessages(question) {
+    const history = [...(state.chatHistory || [])];
+    const last = history[history.length - 1];
+    if (last?.role === 'user' && last.text.trim() === question.trim()) history.pop();
+    const recent = history.slice(-8).map(m=>({role:m.role==='assistant'?'assistant':'user', content:m.text}));
+    return [...recent, {role:'user', content:`질문: ${question}\n\n현재 분석 자료:\n${buildAiContext(question)}`}];
+  }
+
+  async function fetchWithTimeout(url, options = {}, timeoutMs = 30000) {
+    const controller = new AbortController();
+    const timer = setTimeout(()=>controller.abort(), timeoutMs);
+    try { return await fetch(url, {...options, signal:controller.signal}); }
+    catch (err) {
+      if (err?.name === 'AbortError') throw new Error('API 응답 대기 시간이 초과되었습니다. 잠시 후 다시 시도해 주세요.');
+      throw err;
+    } finally { clearTimeout(timer); }
+  }
+
+  async function parseApiError(response) {
+    let detail = '';
+    try { const data = await response.json(); detail = data?.error?.message || data?.message || JSON.stringify(data).slice(0,600); }
+    catch { try { detail = (await response.text()).slice(0,600); } catch {} }
+    return new Error(`${response.status} ${response.statusText}${detail ? ` · ${detail}` : ''}`);
+  }
+
+  function extractOpenAiText(data) {
+    if (typeof data?.output_text === 'string' && data.output_text.trim()) return data.output_text.trim();
+    const parts = [];
+    for (const item of data?.output || []) for (const c of item?.content || []) if (typeof c?.text === 'string') parts.push(c.text);
+    return parts.join('\n').trim();
+  }
+
+  async function callAiProvider(question, {testOnly=false} = {}) {
+    const provider = state.settings.apiProvider;
+    const key = state.settings.apiKey.trim();
+    const model = state.settings.apiModel.trim();
+    if (provider === 'local') throw new Error('로컬 모드입니다.');
+    if (!key) throw new Error('API 키를 입력해 주세요.');
+    if (!model) throw new Error('모델 ID를 입력해 주세요.');
+    const system = testOnly ? '연결 확인용 요청이다. 한국어로 “연결 성공”만 답한다.' : buildSystemPrompt();
+    const messages = testOnly ? [{role:'user',content:'연결을 확인해줘.'}] : getRecentApiMessages(question);
+    let response;
+    if (provider === 'openai') {
+      response = await fetchWithTimeout('https://api.openai.com/v1/responses', {
+        method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},
+        body:JSON.stringify({model, instructions:system, input:messages.map(m=>({role:m.role,content:[{type:'input_text',text:m.content}]})), max_output_tokens:testOnly?40:2200})
+      });
+      if (!response.ok) throw await parseApiError(response);
+      const text = extractOpenAiText(await response.json());
+      if (!text) throw new Error('API 응답에서 텍스트를 찾지 못했습니다.');
+      return text;
+    }
+    if (provider === 'anthropic') {
+      response = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
+        method:'POST', headers:{'Content-Type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+        body:JSON.stringify({model, max_tokens:testOnly?80:2200, system, messages:messages.map(m=>({role:m.role==='assistant'?'assistant':'user',content:m.content}))})
+      });
+      if (!response.ok) throw await parseApiError(response);
+      const data = await response.json();
+      const text = (data.content || []).filter(x=>x.type==='text').map(x=>x.text).join('\n').trim();
+      if (!text) throw new Error('API 응답에서 텍스트를 찾지 못했습니다.');
+      return text;
+    }
+    if (provider === 'gemini') {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+      response = await fetchWithTimeout(url, {
+        method:'POST', headers:{'Content-Type':'application/json','x-goog-api-key':key},
+        body:JSON.stringify({systemInstruction:{parts:[{text:system}]},contents:messages.map(m=>({role:m.role==='assistant'?'model':'user',parts:[{text:m.content}]})),generationConfig:{maxOutputTokens:testOnly?80:2200}})
+      });
+      if (!response.ok) throw await parseApiError(response);
+      const data = await response.json();
+      const text = (data.candidates?.[0]?.content?.parts || []).map(x=>x.text||'').join('\n').trim();
+      if (!text) throw new Error(data.promptFeedback?.blockReason ? `요청이 차단되었습니다: ${data.promptFeedback.blockReason}` : 'API 응답에서 텍스트를 찾지 못했습니다.');
+      return text;
+    }
+    if (provider === 'compatible') {
+      const endpoint = state.settings.apiEndpoint.trim();
+      if (!endpoint) throw new Error('OpenAI 호환 API 주소를 입력해 주세요.');
+      response = await fetchWithTimeout(endpoint, {
+        method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},
+        body:JSON.stringify({model,messages:[{role:'system',content:system},...messages],max_tokens:testOnly?80:2200})
+      });
+      if (!response.ok) throw await parseApiError(response);
+      const data = await response.json();
+      const text = data.choices?.[0]?.message?.content?.trim();
+      if (!text) throw new Error('API 응답에서 텍스트를 찾지 못했습니다.');
+      return text;
+    }
+    throw new Error('지원하지 않는 API 방식입니다.');
+  }
+
+  function inlineMarkdown(text) {
+    return text
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/__([^_]+)__/g, '<strong>$1</strong>');
+  }
+
+  function renderChatMarkdown(raw) {
+    const source = String(raw || '').replace(/\r\n?/g,'\n');
+    const chunks = source.split(/(```[\s\S]*?```)/g);
+    let html = '';
+    for (const chunk of chunks) {
+      if (!chunk) continue;
+      if (chunk.startsWith('```')) {
+        const body = chunk.replace(/^```[^\n]*\n?/, '').replace(/```$/, '');
+        html += `<pre><code>${esc(body)}</code></pre>`;
+        continue;
+      }
+      const lines = chunk.split('\n');
+      let list = null;
+      const closeList=()=>{if(list){html+=`</${list}>`;list=null;}};
+      for (const original of lines) {
+        const line = esc(original.trim());
+        if (!line) { closeList(); continue; }
+        let m;
+        if ((m=line.match(/^(#{1,4})\s+(.+)$/))) { closeList(); const level=Math.min(4,m[1].length+1); html+=`<h${level}>${inlineMarkdown(m[2])}</h${level}>`; continue; }
+        if ((m=line.match(/^(?:[-*•])\s+(.+)$/))) { if(list!=='ul'){closeList();html+='<ul>';list='ul';} html+=`<li>${inlineMarkdown(m[1])}</li>`; continue; }
+        if ((m=line.match(/^\d+[.)]\s+(.+)$/))) { if(list!=='ol'){closeList();html+='<ol>';list='ol';} html+=`<li>${inlineMarkdown(m[1])}</li>`; continue; }
+        if ((m=line.match(/^&gt;\s*(.+)$/))) { closeList(); html+=`<blockquote>${inlineMarkdown(m[1])}</blockquote>`; continue; }
+        closeList(); html+=`<p>${inlineMarkdown(line)}</p>`;
+      }
+      closeList();
+    }
+    return `<div class="chat-rich">${html || '<p>응답 내용이 없습니다.</p>'}</div>`;
+  }
+
+  function setApiStatus(text, kind='') {
+    const el=$('#apiStatus');
+    if (el) { el.textContent=text; el.className=`api-status ${kind}`.trim(); }
+  }
+
+  function updateApiSettingsUI() {
+    const provider=$('#assistantProvider').value;
+    const isLocal=provider==='local';
+    $('#apiModelRow').hidden=isLocal;
+    $('#apiKeyRow').hidden=isLocal;
+    $('#apiEndpointRow').hidden=provider!=='compatible';
+    $('#rememberApiKey').closest('label').hidden=isLocal;
+    $('#shareCodeWithAi').closest('label').hidden=isLocal;
+    $('#testApiBtn').hidden=isLocal;
+    const label=PROVIDER_LABELS[provider] || provider;
+    setApiStatus(isLocal?'로컬 모드':`${label} · 연결 전`);
+    $('#chatFoot').textContent=isLocal?'로컬 분석 모드 · 파일은 브라우저 밖으로 나가지 않습니다.':`${label} 직접 연결 · 선택한 분석 정보가 API 업체로 전송됩니다.`;
+  }
+
   function answerQuestion(question) {
     if (!state.scripts.length) return '먼저 Tampermonkey 백업 ZIP이나 .user.js 파일을 불러와야 분석할 수 있습니다.';
     const q = question.trim().toLowerCase();
@@ -527,8 +752,17 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         return transformSentence(line, preset, customEnding);
       }).join(' ');
     }).join('');
+    let finalText = styled;
+    const markerMissing = (preset === 'cat' && !/냥/.test(finalText)) || (preset === 'court' && !/(옵니다|사옵니다|옵소서)/.test(finalText)) || (preset === 'maid' && !/(주인님|드릴게요|답니다|예요)/.test(finalText));
+    if (markerMissing) {
+      const rows = finalText.split('\n');
+      for (let i = rows.length - 1; i >= 0; i--) {
+        if (rows[i].trim()) { rows[i] = transformSentence(rows[i], preset, customEnding); break; }
+      }
+      finalText = rows.join('\n');
+    }
     const prefix = title.trim() ? `${title.trim()}, ` : preset === 'court' ? '전하, ' : preset === 'maid' ? '주인님, ' : '';
-    return prefix + styled;
+    return prefix + finalText;
   }
 
   function transformSentence(line, preset, customEnding) {
@@ -574,23 +808,27 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     return line;
   }
 
-  function appendChat(role, text, persist = true) {
+  function appendChat(role, text, persist = true, options = {}) {
     const container = $('#chatMessages');
     const div = document.createElement('div');
-    div.className = `message ${role}`;
-    div.innerHTML = `<div class="bubble">${esc(text)}</div>`;
+    div.className = `message ${role}${options.loading ? ' loading' : ''}`;
+    if (options.loading) div.innerHTML = '<div class="bubble"><span class="typing-dots" aria-label="답변 생성 중"><i></i><i></i><i></i></span></div>';
+    else if (role === 'assistant') div.innerHTML = `<div class="bubble">${renderChatMarkdown(text)}</div>`;
+    else div.innerHTML = `<div class="bubble">${esc(text)}</div>`;
     container.appendChild(div);
     container.scrollTop = container.scrollHeight;
-    if (persist) {
+    if (persist && !options.loading) {
       state.chatHistory.push({role,text,at:Date.now()});
       state.chatHistory = state.chatHistory.slice(-40);
       saveState();
     }
+    return div;
   }
 
   function renderChatHistory() {
     const container = $('#chatMessages');
-    container.innerHTML = '<div class="message assistant"><div class="bubble">안녕하세요. 파일을 불러온 뒤 “뭐가 중복이야?”, “크랙 배경 관련 스크립트 찾아줘”, “뭘 꺼도 돼?”처럼 물어보세요.</div></div>';
+    container.innerHTML = '';
+    appendChat('assistant','## 반갑다냥\n파일을 불러온 뒤 아래처럼 물어보면 된다냥.\n\n- **뭐가 중복이야?**\n- **구버전 같이 켠 거 있어?**\n- **충돌 위험 높은 것만 알려줘**\n\n오른쪽 위 ⚙에서 개인 API 키와 말투를 설정할 수 있다냥.',false);
     for (const m of state.chatHistory || []) appendChat(m.role, m.text, false);
   }
 
@@ -641,7 +879,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
   }
 
   async function saveState() {
-    try { await dbSet(STORAGE_KEY, state); }
+    try {
+      const snapshot = {...state, settings:{...state.settings}};
+      if (!snapshot.settings.rememberApiKey) snapshot.settings.apiKey='';
+      await dbSet(STORAGE_KEY, snapshot);
+    }
     catch (e) { console.warn('저장 실패', e); toast('브라우저 저장 공간이 부족하거나 차단됐습니다.'); }
   }
 
@@ -650,11 +892,18 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       const saved = await dbGet(STORAGE_KEY);
       if (saved) {
         state = saved;
+        const oldRevision = Number(state.settings?.settingsRevision || 0);
         state.settings = {...DEFAULT_SETTINGS, ...(state.settings || {})};
+        if (oldRevision < 4) {
+          state.settings.tone='cat';
+          state.settings.intensity='light';
+          state.settings.settingsRevision=4;
+        }
         state.chatHistory ||= [];
         state.scripts ||= [];
         state.issues ||= [];
       }
+      if (!state.settings.rememberApiKey) state.settings.apiKey=sessionStorage.getItem(SESSION_API_KEY) || '';
     } catch (e) { console.warn('저장 데이터 불러오기 실패', e); }
   }
 
@@ -742,12 +991,32 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     $('#chatCloseBtn').addEventListener('click',()=>setChatOpen(false));
     $('#chatSettingsBtn').addEventListener('click',()=>{const box=$('#chatSettings');const open=!box.classList.contains('open');box.classList.toggle('open',open);box.setAttribute('aria-hidden',String(!open));});
     $('.quick-prompts').addEventListener('click',e=>{ if(e.target.tagName==='BUTTON'){ $('#chatInput').value=e.target.textContent; $('#chatForm').requestSubmit(); }});
-    $('#chatForm').addEventListener('submit',e=>{
+    $('#chatForm').addEventListener('submit',async e=>{
       e.preventDefault(); const q=$('#chatInput').value.trim(); if(!q)return;
       appendChat('user',q); $('#chatInput').value=''; $('#chatInput').style.height='auto';
-      const base=answerQuestion(q);
-      const styled=applyTone(base,$('#assistantTone').value,$('#assistantIntensity').value,$('#assistantTitle').value,$('#assistantCustomEnding').value);
-      window.setTimeout(()=>appendChat('assistant',styled),120);
+      const send=$('#chatSendBtn'); send.disabled=true;
+      const loading=appendChat('assistant','',false,{loading:true});
+      try {
+        let answer;
+        if (state.settings.apiProvider === 'local') {
+          const base=answerQuestion(q);
+          answer=applyTone(base,state.settings.tone,state.settings.intensity,state.settings.title,state.settings.customEnding);
+          await new Promise(r=>setTimeout(r,140));
+        } else {
+          answer=await callAiProvider(q);
+          setApiStatus(`${PROVIDER_LABELS[state.settings.apiProvider]} · 연결됨`,'ok');
+        }
+        loading.remove(); appendChat('assistant',answer);
+      } catch (err) {
+        console.error(err); loading.remove();
+        setApiStatus('연결 실패','error');
+        const base=applyTone(answerQuestion(q),state.settings.tone,state.settings.intensity,state.settings.title,state.settings.customEnding);
+        appendChat('assistant',`## API 연결 실패
+> ${err.message}
+
+### 로컬 분석으로 대신 답한다냥
+${base}`);
+      } finally { send.disabled=false; $('#chatInput').focus(); }
     });
     $('#chatInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('#chatForm').requestSubmit();}});
     $('#chatInput').addEventListener('input',e=>{e.target.style.height='auto';e.target.style.height=Math.min(e.target.scrollHeight,120)+'px';});
@@ -761,11 +1030,36 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         saveState();
       });
     }
+    $('#assistantProvider').addEventListener('change',()=>{
+      const provider=$('#assistantProvider').value;
+      state.settings.apiProvider=provider;
+      const defaults=PROVIDER_DEFAULTS[provider];
+      state.settings.apiModel=defaults.model;
+      state.settings.apiEndpoint=defaults.endpoint;
+      $('#assistantApiModel').value=state.settings.apiModel;
+      $('#assistantApiEndpoint').value=state.settings.apiEndpoint;
+      updateApiSettingsUI(); saveState();
+    });
+    $('#assistantApiModel').addEventListener('input',e=>{state.settings.apiModel=e.target.value;saveState();});
+    $('#assistantApiEndpoint').addEventListener('input',e=>{state.settings.apiEndpoint=e.target.value;saveState();});
+    $('#assistantApiKey').addEventListener('input',e=>{state.settings.apiKey=e.target.value;sessionStorage.setItem(SESSION_API_KEY,e.target.value);setApiStatus(e.target.value?'키 입력됨 · 연결 전':'API 키 필요');saveState();});
+    $('#rememberApiKey').addEventListener('change',e=>{state.settings.rememberApiKey=e.target.checked;saveState();});
+    $('#shareCodeWithAi').addEventListener('change',e=>{state.settings.shareCodeWithAi=e.target.checked;saveState();});
+    $('#apiKeyToggle').addEventListener('click',()=>{const input=$('#assistantApiKey');const show=input.type==='password';input.type=show?'text':'password';$('#apiKeyToggle').textContent=show?'숨김':'보기';});
+    $('#testApiBtn').addEventListener('click',async()=>{
+      state.settings.apiKey=$('#assistantApiKey').value;
+      state.settings.apiModel=$('#assistantApiModel').value;
+      state.settings.apiEndpoint=$('#assistantApiEndpoint').value;
+      setApiStatus('연결 확인 중…'); $('#testApiBtn').disabled=true;
+      try { await callAiProvider('연결 확인',{testOnly:true}); setApiStatus(`${PROVIDER_LABELS[state.settings.apiProvider]} · 연결 성공`,'ok'); toast('API 연결에 성공했습니다.'); }
+      catch(err){console.error(err);setApiStatus(`실패 · ${err.message}`,'error');toast('API 연결에 실패했습니다.');}
+      finally{$('#testApiBtn').disabled=false;saveState();}
+    });
     $('#ignoreDisabled').addEventListener('change',e=>{state.settings.ignoreDisabled=e.target.checked;saveState();});
     $('#similarityThreshold').addEventListener('input',e=>{$('#thresholdValue').textContent=`${e.target.value}%`;});
     $('#similarityThreshold').addEventListener('change',e=>{state.settings.similarityThreshold=Number(e.target.value);saveState();});
     $('#reanalyzeBtn').addEventListener('click',()=>{state.settings.ignoreDisabled=$('#ignoreDisabled').checked;state.settings.similarityThreshold=Number($('#similarityThreshold').value);analyzeAll();toast('현재 설정으로 다시 분석했습니다.');});
-    $('#clearDataBtn').addEventListener('click',async()=>{if(!confirm('불러온 스크립트와 분석 결과를 모두 지울까요?'))return;state={scripts:[],issues:[],importedAt:null,settings:{...DEFAULT_SETTINGS},chatHistory:[]};await dbDelete(STORAGE_KEY);applySettingsToUI();renderAll();toast('로컬 데이터를 지웠습니다.');});
+    $('#clearDataBtn').addEventListener('click',async()=>{if(!confirm('불러온 스크립트와 분석 결과를 모두 지울까요?'))return;state={scripts:[],issues:[],importedAt:null,settings:{...DEFAULT_SETTINGS},chatHistory:[]};sessionStorage.removeItem(SESSION_API_KEY);await dbDelete(STORAGE_KEY);applySettingsToUI();renderAll();toast('로컬 데이터를 지웠습니다.');});
     $('#themeToggle').addEventListener('click',()=>{state.settings.theme=(document.documentElement.dataset.theme==='dark'?'light':'dark');applySettingsToUI();saveState();});
     document.addEventListener('keydown',e=>{if(e.key==='Escape'&&widget.classList.contains('open'))setChatOpen(false);});
   }
@@ -776,6 +1070,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     $('#assistantTitle').value=state.settings.title;
     $('#assistantCustomEnding').value=state.settings.customEnding || '';
     $('#customEndingRow').hidden=state.settings.tone !== 'custom';
+    $('#assistantProvider').value=state.settings.apiProvider || 'local';
+    $('#assistantApiModel').value=state.settings.apiModel || '';
+    $('#assistantApiEndpoint').value=state.settings.apiEndpoint || '';
+    $('#assistantApiKey').value=state.settings.apiKey || '';
+    $('#rememberApiKey').checked=Boolean(state.settings.rememberApiKey);
+    $('#shareCodeWithAi').checked=Boolean(state.settings.shareCodeWithAi);
+    updateApiSettingsUI();
     $('#ignoreDisabled').checked=state.settings.ignoreDisabled;
     $('#similarityThreshold').value=state.settings.similarityThreshold;
     $('#thresholdValue').textContent=`${state.settings.similarityThreshold}%`;

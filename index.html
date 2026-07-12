@@ -34,7 +34,7 @@
         <span class="privacy-dot"></span>
         <div><strong>로컬 분석</strong><small>파일과 코드는 서버로 전송되지 않습니다.</small></div>
       </div>
-      <div class="sidebar-version">v0.3.0 web</div>
+      <div class="sidebar-version">v0.4.0 web</div>
     </aside>
 
     <main class="main">
@@ -135,8 +135,8 @@
           <article class="panel about-panel">
             <h2>현재 버전</h2>
             <dl class="info-list">
-              <div><dt>버전</dt><dd>0.3.0 web</dd></div>
-              <div><dt>외부 API</dt><dd>사용하지 않음</dd></div>
+              <div><dt>버전</dt><dd>0.4.0 web</dd></div>
+              <div><dt>외부 API</dt><dd>사용자 선택 연결</dd></div>
               <div><dt>분석 위치</dt><dd>브라우저 내부</dd></div>
               <div><dt>지원 파일</dt><dd>ZIP, .user.js</dd></div>
             </dl>
@@ -162,17 +162,48 @@
     <header class="chat-header">
       <div class="assistant-profile"><span class="assistant-avatar">M</span><div><strong>몽키 어시스턴트</strong><small><i></i> 현재 분석 결과 상담</small></div></div>
       <div class="chat-header-actions">
-        <button id="chatSettingsBtn" class="mini-icon" type="button" title="말투 설정" aria-label="말투 설정">⚙</button>
+        <button id="chatSettingsBtn" class="mini-icon" type="button" title="AI·말투 설정" aria-label="AI·말투 설정">⚙</button>
         <button id="chatCloseBtn" class="mini-icon" type="button" title="닫기" aria-label="닫기">×</button>
       </div>
     </header>
 
     <section id="chatSettings" class="chat-settings" aria-hidden="true">
-      <div class="chat-settings-head"><strong>답변 말투</strong><span>분석 내용은 유지하고 표현만 바꿉니다.</span></div>
-      <label>말투<select id="assistantTone"></select></label>
-      <label>강도<select id="assistantIntensity"><option value="light">가볍게</option><option value="medium">적당히</option><option value="strong">진하게</option></select></label>
-      <label>사용자 호칭<input id="assistantTitle" type="text" placeholder="예: 공주님, 전하, 주인님"></label>
-      <label id="customEndingRow" hidden>커스텀 문장 끝<input id="assistantCustomEnding" type="text" placeholder="예: ~라구"></label>
+      <div class="chat-settings-section api-settings-section">
+        <div class="chat-settings-head"><strong>AI 연결</strong><span>기본은 무료 로컬 상담이며, 개인 API 키를 넣으면 AI 분석을 사용할 수 있습니다.</span></div>
+        <div class="chat-settings-grid">
+          <label>답변 방식
+            <select id="assistantProvider">
+              <option value="local">로컬 상담 · API 없음</option>
+              <option value="openai">OpenAI API</option>
+              <option value="gemini">Gemini API</option>
+              <option value="anthropic">Claude API</option>
+              <option value="compatible">OpenAI 호환 API</option>
+            </select>
+          </label>
+          <label id="apiModelRow">모델
+            <input id="assistantApiModel" type="text" autocomplete="off" placeholder="모델 ID">
+          </label>
+          <label id="apiEndpointRow" class="settings-wide" hidden>API 주소
+            <input id="assistantApiEndpoint" type="url" inputmode="url" autocomplete="off" placeholder="https://.../v1/chat/completions">
+          </label>
+          <label id="apiKeyRow" class="settings-wide api-key-label">API 키
+            <span class="api-key-input"><input id="assistantApiKey" type="password" autocomplete="off" spellcheck="false" placeholder="키는 기본적으로 현재 탭에만 보관됩니다"><button id="apiKeyToggle" type="button" aria-label="API 키 표시 전환">보기</button></span>
+          </label>
+          <label class="check-inline settings-wide"><input id="rememberApiKey" type="checkbox"><span>이 브라우저에 API 키 기억</span></label>
+          <label class="check-inline settings-wide"><input id="shareCodeWithAi" type="checkbox"><span>질문과 관련된 코드 일부도 AI에 전달</span></label>
+          <div class="api-note settings-wide">키와 질문은 사이트 운영자가 수집하지 않습니다. AI 모드에서는 선택한 API 업체로 분석 정보가 직접 전송됩니다.</div>
+          <div class="api-actions settings-wide"><button id="testApiBtn" class="button secondary compact" type="button">연결 테스트</button><span id="apiStatus" class="api-status">로컬 모드</span></div>
+        </div>
+      </div>
+      <div class="chat-settings-section tone-settings-section">
+        <div class="chat-settings-head"><strong>답변 말투</strong><span>기본 말투는 가벼운 고양이체입니다.</span></div>
+        <div class="chat-settings-grid">
+          <label>말투<select id="assistantTone"></select></label>
+          <label>강도<select id="assistantIntensity"><option value="light">가볍게</option><option value="medium">적당히</option><option value="strong">진하게</option></select></label>
+          <label class="settings-wide">사용자 호칭<input id="assistantTitle" type="text" placeholder="예: 공주님, 전하, 주인님"></label>
+          <label id="customEndingRow" class="settings-wide" hidden>커스텀 문장 끝<input id="assistantCustomEnding" type="text" placeholder="예: ~라구"></label>
+        </div>
+      </div>
     </section>
 
     <div id="chatMessages" class="chat-messages" aria-live="polite"></div>
@@ -186,9 +217,9 @@
 
     <form id="chatForm" class="chat-form">
       <textarea id="chatInput" rows="1" placeholder="스크립트 구성에 대해 물어보세요"></textarea>
-      <button class="send-button" type="submit" aria-label="보내기">↑</button>
+      <button id="chatSendBtn" class="send-button" type="submit" aria-label="보내기">↑</button>
     </form>
-    <div class="chat-foot">API 없이 불러온 데이터만 보고 답합니다.</div>
+    <div id="chatFoot" class="chat-foot">로컬 분석 모드 · 파일은 브라우저 밖으로 나가지 않습니다.</div>
   </aside>
 
   <div id="toast" class="toast" role="status"></div>
