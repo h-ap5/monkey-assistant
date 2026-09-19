@@ -1,0 +1,11 @@
+{
+  "name": "monkey-assistant",
+  "version": "0.6.0",
+  "private": true,
+  "description": "Tampermonkey 백업의 중복, 버전 관계, 기능 차이와 충돌 후보를 브라우저에서 분석하는 정적 웹앱",
+  "scripts": {
+    "build": "node scripts/build-bundle.mjs",
+    "test": "node tests/analysis-core.test.js",
+    "check": "node --check analysis-core.js && node --check app.js && node --check app.bundle.js && node scripts/build-bundle.mjs --check"
+  }
+}
