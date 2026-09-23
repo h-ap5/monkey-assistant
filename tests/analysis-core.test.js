@@ -402,12 +402,13 @@ test('fetch 패치와 fetch 호출을 구분해 충돌 후보로 잡는다', () 
   assert.ok(pair.compatibility.reasons.some(item => item.type === 'network' && item.severity === 'notice'));
 });
 
-test('같은 네트워크 함수를 둘 다 패치하면 높은 충돌 후보로 둔다', () => {
+test('같은 네트워크 함수를 둘 다 패치하면 근거 없이는 알림으로 둔다', () => {
   const a = analyzed({ name: '패치 A', namespace: 'a', body: 'window.fetch = async (...args) => originalA(...args);' });
   const b = analyzed({ name: '패치 B', namespace: 'b', body: 'globalThis.fetch = async (...args) => originalB(...args);' });
   const pair = core.assessPair(a, b);
   assert.ok(pair.conflicts.network.some(item => item.channel === 'fetch' && item.kind === 'patch_patch'));
-  assert.equal(pair.compatibility.level, 'high');
+  assert.equal(pair.compatibility.level, 'notice');
+  assert.match(pair.recommendation.summary, /기능이 작동하지 않을 수/);
 });
 
 test('XHR prototype 패치와 XHR 생성을 구분한다', () => {
@@ -570,6 +571,59 @@ test('대량 추출 결과는 각 사실 범주 상한을 넘지 않는다', () 
   assert.ok(facts.events.listenTargets.length <= 160);
   assert.ok(facts.network.history.call.length <= 160);
   assert.ok(facts.operations.filter(item => item.kind === 'css').length <= 160);
+});
+
+test('fetch와 XHR를 함께 감싸면 기능 영향만 안내하고 버튼·렉을 단정하지 않는다', () => {
+  const a = analyzed({ name: '통신 A', namespace: 'a', body: 'window.fetch = (...args) => originalA(...args); XMLHttpRequest.prototype.open = function() {};' });
+  const b = analyzed({ name: '통신 B', namespace: 'b', body: 'globalThis.fetch = (...args) => originalB(...args); XMLHttpRequest.prototype.send = function() {};' });
+  const pair = core.assessPair(a, b);
+  assert.equal(pair.compatibility.level, 'caution');
+  assert.ok(pair.compatibility.impacts.some(item => item.type === 'feature_failure'));
+  assert.ok(!pair.compatibility.impacts.some(item => ['placement_overlap', 'slow_page', 'missing_control'].includes(item.type)));
+  assert.match(pair.recommendation.summary, /기능이 작동하지 않을 수/);
+  assert.doesNotMatch(pair.recommendation.summary, /fetch|XHR|버튼이나 창|느려지/);
+  assert.ok(pair.compatibility.reasons.some(item => item.text.includes('fetch')));
+});
+
+test('같은 통신 주소의 요청을 양쪽이 바꿀 때만 강한 후보로 둔다', () => {
+  const a = analyzed({ name: '변경 A', namespace: 'a', body: "window.fetch = (...args) => { if (args[0] === '/api/chat') args[1] = { body: 'a' }; return originalA(...args); };" });
+  const b = analyzed({ name: '변경 B', namespace: 'b', body: "window.fetch = (...args) => { if (args[0] === '/api/chat') args[1] = { body: 'b' }; return originalB(...args); };" });
+  const other = analyzed({ name: '다른 주소', namespace: 'c', body: "window.fetch = (...args) => { if (args[0] === '/api/profile') args[1] = { body: 'c' }; return originalC(...args); };" });
+  const observe = analyzed({ name: '관찰', namespace: 'd', body: "window.fetch = (...args) => { if (args[0] === '/api/chat') log(args[0]); return originalD(...args); };" });
+  const shared = core.assessPair(a, b);
+  assert.ok(shared.conflicts.network.some(item => item.kind === 'same_endpoint_change'));
+  assert.equal(shared.compatibility.level, 'high');
+  for (const pair of [core.assessPair(a, other), core.assessPair(a, observe)]) {
+    assert.ok(pair.conflicts.network.some(item => item.kind === 'patch_patch'));
+    assert.ok(!pair.conflicts.network.some(item => item.kind === 'same_endpoint_change'));
+    assert.notEqual(pair.compatibility.level, 'high');
+  }
+});
+
+test('같은 모서리의 고정 버튼은 겹침 가능성을 안내한다', () => {
+  const a = analyzed({ name: '버튼 A', namespace: 'a', body: "GM_addStyle('#tool-a { position: fixed; right: 0; bottom: 0; }');" });
+  const b = analyzed({ name: '버튼 B', namespace: 'b', body: "GM_addStyle('#tool-b { position: fixed; right: 0; bottom: 0; }');" });
+  const pair = core.assessPair(a, b);
+  assert.ok(pair.conflicts.placements.length > 0);
+  assert.match(pair.recommendation.summary, /겹쳐/);
+  assert.ok(!pair.compatibility.impacts.some(item => item.type === 'feature_failure'));
+});
+
+test('양쪽에 잦은 반복 작업이 있을 때만 느려짐을 안내한다', () => {
+  const a = analyzed({ name: '감시 A', namespace: 'a', body: "setInterval(() => document.querySelectorAll('.item'), 100);" });
+  const b = analyzed({ name: '감시 B', namespace: 'b', body: "setInterval(() => document.querySelectorAll('.card'), 120);" });
+  const pair = core.assessPair(a, b);
+  assert.ok(pair.conflicts.performance.length > 0);
+  assert.match(pair.recommendation.summary, /느려지거나 스크롤이 끊길/);
+  assert.ok(!pair.compatibility.impacts.some(item => item.type === 'feature_failure'));
+});
+
+test('가벼운 반복 타이머만으로 렉을 단정하지 않는다', () => {
+  const a = analyzed({ name: '시계 A', namespace: 'a', body: 'setInterval(() => tickA(), 100);' });
+  const b = analyzed({ name: '시계 B', namespace: 'b', body: 'setInterval(() => tickB(), 120);' });
+  const pair = core.assessPair(a, b);
+  assert.deepEqual(pair.conflicts.performance, []);
+  assert.ok(!pair.compatibility.impacts.some(item => item.type === 'slow_page'));
 });
 
 let passed = 0;

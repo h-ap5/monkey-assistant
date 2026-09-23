@@ -17,7 +17,8 @@
 
 - 지금 할 일과 안전한 확인 순서
 - 판단 확신도
-- 겹친 사이트, 화면 요소, 저장 키, 이벤트, 네트워크 후킹 등 판단 근거
+- 함께 켰을 때 생길 수 있는 현상: 버튼 가림·겹침, 기능 미작동, 설정 변화, 느려짐 등 코드에서 단서가 확인된 항목만 표시
+- `왜 이렇게 판단했는지 보기`를 열면 겹친 사이트·화면 요소·저장 키·통신 처리 등 기술적 근거 표시
 - 같은 계열의 구버전인지, 기능이 달라진 별도판인지에 대한 설명
 
 ## 지원 기능
@@ -109,7 +110,7 @@ npm run check
 2. `analysis-core.js`
 3. `app.js`
 
-`app.bundle.js`는 생성물입니다. 직접 고치지 말고 원본 파일을 수정한 뒤 다시 빌드하세요. GitHub Pages에는 `index.html`, `styles.css`, `icon.svg`, `app.bundle.js`와 라이선스 파일을 함께 배포합니다.
+`app.bundle.js`는 생성물입니다. 직접 고치지 말고 원본 파일을 수정한 뒤 다시 빌드하세요. GitHub Pages에는 `index.html`, `styles.css`, `tampermonkey-logo.svg`, `app.bundle.js`와 라이선스·로고 출처 파일을 함께 배포합니다. 예전 `icon.svg`는 복원용으로 남아 있습니다.
 
 ## 파일 구조
 
@@ -117,6 +118,8 @@ npm run check
 - `app.js` — 가져오기, 저장, 화면 표시, 보고서, 원격 확인, 상담 기능
 - `index.html` — 화면 구조
 - `styles.css` — 반응형 디자인과 색상
+- `tampermonkey-logo.svg` — 상단 및 브라우저 탭에 표시되는 Tampermonkey 로고
+- `TAMPERMONKEY-LOGO-NOTICE.md` — 로고 출처·별도 라이선스·비공식 관계 안내
 - `app.bundle.js` — GitHub Pages가 실제로 불러오는 배포 번들
 - `vendor/jszip.min.js` — ZIP 해제 라이브러리
 - `tests/analysis-core.test.js` — 분석 엔진 회귀 테스트
@@ -124,4 +127,4 @@ npm run check
 
 ## 라이선스
 
-프로젝트 코드는 [MIT License](LICENSE)를 따릅니다. JSZip 라이선스는 [JSZIP-LICENSE.md](JSZIP-LICENSE.md)를 확인하세요.
+프로젝트 코드는 [MIT License](LICENSE)를 따릅니다. JSZip 라이선스는 [JSZIP-LICENSE.md](JSZIP-LICENSE.md)를 확인하세요. Tampermonkey 로고는 별도 라이선스가 적용되며 [로고 안내](TAMPERMONKEY-LOGO-NOTICE.md)에 출처와 변경 내용을 적었습니다. 이 도구는 Tampermonkey의 공식 제품이 아닙니다.

@@ -7,7 +7,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function createMonkeyAssistantCore() {
   'use strict';
 
-  const CORE_VERSION = '0.3.1';
+  const CORE_VERSION = '0.4.0';
   const MAX_FACTS = 160;
   const MAX_SHINGLES = 384;
   const MAX_SHINGLE_WINDOWS = 8192;
@@ -21,7 +21,8 @@
     block: '기본 동작을 막음',
     call: '사용함',
     patch: '가로챔',
-    delete: '삭제함'
+    delete: '삭제함',
+    watch: '반복해서 확인함'
   });
 
   const RELATIONSHIP_LABELS = Object.freeze({
@@ -627,10 +628,18 @@
         blockUncertain: false
       },
       network: {
-        fetch: { call: false, patch: false },
-        xhr: { call: false, patch: false },
-        websocket: { call: false, patch: false },
+        fetch: { call: false, patch: false, endpointHints: [], changesRequest: false, changesResponse: false, replacesResult: false },
+        xhr: { call: false, patch: false, endpointHints: [], changesRequest: false, changesResponse: false, replacesResult: false },
+        websocket: { call: false, patch: false, endpointHints: [], changesRequest: false, changesResponse: false, replacesResult: false },
         history: { call: [], patch: [], listen: [] }
+      },
+      performance: {
+        rapidIntervals: [],
+        broadObservers: [],
+        animationLoop: false,
+        frequentEvents: [],
+        repeatedDomScan: false,
+        riskScore: 0
       },
       css: { selectors: [], properties: { read: [], write: [] }, writes: [] },
       operations: []
@@ -914,6 +923,15 @@
     }
   }
 
+  function extractNetworkEndpointHints(source) {
+    return unique(captureAll(
+      source,
+      /(['"`])((?:https?:\/\/[^'"`\s]{3,220}|\/(?:api|v\d+|graphql|chat|message|messages|conversation|conversations|completion|generate|generation|room|rooms|character|characters|log|logs)(?:\/[^'"`\s]*)?))\1/gi,
+      match => match[2].replace(/[?#].*$/, '').replace(/\/$/, ''),
+      80
+    ));
+  }
+
   function extractNetworkFacts(source, facts) {
     if (!source.includes('fetch') && !source.includes('XMLHttpRequest') &&
         !source.includes('WebSocket') && !source.includes('history') &&
@@ -925,17 +943,78 @@
     network.xhr.call = /new\s+XMLHttpRequest\s*\(/.test(source);
     network.websocket.patch = /WebSocket\s*\.\s*prototype\s*\.\s*(?:send|close|addEventListener)\s*=|\b(?:window|unsafeWindow|globalThis)\s*\.\s*WebSocket\s*=/.test(source);
     network.websocket.call = /new\s+(?:window\s*\.\s*)?WebSocket\s*\(/.test(source);
+    const endpointHints = extractNetworkEndpointHints(source);
+    const changesRequest = /\bheaders?\s*\.\s*(?:set|append|delete)\s*\(|\b(?:args|arguments)\s*\[\s*[01]\s*\]\s*=(?!=)|\b(?:init|options|request)\s*\.\s*(?:body|headers|method|url)\s*=(?!=)|\bnew\s+Request\s*\(/i.test(source);
+    const changesResponse = /\bnew\s+Response\s*\(|\bresponse(?:Text)?\s*=|\.\s*(?:json|text)\s*=\s*(?:async\s*)?(?:function|\()/i.test(source);
+    const replacesResult = /\breturn\s+(?:Promise\s*\.\s*resolve\s*\(\s*)?new\s+Response\s*\(/i.test(source);
+    for (const channel of ['fetch', 'xhr', 'websocket']) {
+      if (!network[channel].call && !network[channel].patch) continue;
+      network[channel].endpointHints.push(...endpointHints);
+      network[channel].changesRequest = changesRequest;
+      network[channel].changesResponse = changesResponse;
+      network[channel].replacesResult = replacesResult;
+    }
     network.history.call.push(...captureAll(source, /\bhistory\s*\.\s*(pushState|replaceState|back|forward|go)\s*\(/g));
     network.history.patch.push(...captureAll(source, /\bhistory\s*\.\s*(pushState|replaceState)\s*=|Object\.defineProperty\s*\(\s*history\s*,\s*(['"`])(pushState|replaceState)\2/g, match => match[1] || match[3]));
     network.history.listen.push(...captureAll(source, /addEventListener\s*\(\s*(['"`])(popstate|hashchange)\1/g, match => match[2]));
 
     for (const channel of ['fetch', 'xhr', 'websocket']) {
+      network[channel].endpointHints = unique(network[channel].endpointHints).slice(0, MAX_FACTS);
       if (network[channel].call) addOperation(facts, { kind: 'network', channel, action: 'call', resource: channel });
       if (network[channel].patch) addOperation(facts, { kind: 'network', channel, action: 'patch', resource: channel });
     }
     for (const method of network.history.call) addOperation(facts, { kind: 'network', channel: 'history', action: 'call', resource: method });
     for (const method of network.history.patch) addOperation(facts, { kind: 'network', channel: 'history', action: 'patch', resource: method });
     for (const event of network.history.listen) addOperation(facts, { kind: 'network', channel: 'history', action: 'listen', resource: event });
+  }
+
+  function extractPerformanceFacts(source, facts) {
+    const performance = facts.performance;
+    const delays = captureAll(
+      source,
+      /\bsetInterval\s*\([\s\S]{0,800}?,\s*(\d{1,7})\s*\)/g,
+      match => Number(match[1]),
+      24
+    ).filter(delay => Number.isFinite(delay) && delay > 0 && delay <= 250);
+    performance.rapidIntervals.push(...delays);
+
+    const observerCount = (source.match(/\bnew\s+MutationObserver\s*\(/g) || []).length;
+    const observesWideTarget = /\.\s*observe\s*\(\s*(?:document(?:\s*[,)]|\s*\.\s*(?:body|documentElement))|document\s*\.\s*querySelector\s*\(\s*['"](?:body|html)['"]\s*\))/i.test(source);
+    const observesSubtree = /\.\s*observe\s*\([\s\S]{0,1200}?\bsubtree\s*:\s*true/i.test(source);
+    if (observerCount && observesWideTarget && observesSubtree) {
+      performance.broadObservers.push('문서 전체 하위 변경 감시');
+    }
+
+    const animationCalls = (source.match(/\brequestAnimationFrame\s*\(/g) || []).length;
+    performance.animationLoop = animationCalls >= 2;
+    const frequentEvents = (facts.events.listenTargets || [])
+      .map(value => String(value).slice(String(value).lastIndexOf('::') + 2))
+      .filter(event => ['scroll', 'resize', 'mousemove', 'pointermove', 'touchmove', 'wheel', 'input'].includes(event));
+    performance.frequentEvents.push(...frequentEvents);
+
+    const scansManyElements = /\b(?:querySelectorAll|getElementsByClassName|getElementsByTagName|getClientRects|getBoundingClientRect)\s*\(/.test(source);
+    const repeatsWork = delays.length || performance.broadObservers.length || performance.animationLoop || frequentEvents.length;
+    performance.repeatedDomScan = Boolean(scansManyElements && repeatsWork);
+    performance.riskScore = Math.min(10,
+      Math.min(4, delays.length * 2) +
+      Math.min(4, performance.broadObservers.length * 3) +
+      (performance.animationLoop ? 1 : 0) +
+      Math.min(2, frequentEvents.length) +
+      (performance.repeatedDomScan ? 2 : 0)
+    );
+
+    for (const delay of delays) {
+      addOperation(facts, { kind: 'performance', channel: 'timer', action: 'watch', resource: `setInterval ${delay}ms`, confidence: 'medium' });
+    }
+    for (const observer of performance.broadObservers) {
+      addOperation(facts, { kind: 'performance', channel: 'dom', action: 'watch', resource: observer, confidence: 'medium' });
+    }
+    if (performance.animationLoop) {
+      addOperation(facts, { kind: 'performance', channel: 'frame', action: 'watch', resource: 'requestAnimationFrame 반복', confidence: 'medium' });
+    }
+    for (const event of frequentEvents) {
+      addOperation(facts, { kind: 'performance', channel: 'event', action: 'watch', resource: `${event} 반복 입력`, confidence: 'medium' });
+    }
   }
 
   function finalizeFacts(facts) {
@@ -954,6 +1033,9 @@
     facts.network.history.call = unique(facts.network.history.call).slice(0, MAX_FACTS);
     facts.network.history.patch = unique(facts.network.history.patch).slice(0, MAX_FACTS);
     facts.network.history.listen = unique(facts.network.history.listen).slice(0, MAX_FACTS);
+    facts.performance.rapidIntervals = unique(facts.performance.rapidIntervals).sort((a, b) => a - b).slice(0, MAX_FACTS);
+    facts.performance.broadObservers = unique(facts.performance.broadObservers).slice(0, MAX_FACTS);
+    facts.performance.frequentEvents = unique(facts.performance.frequentEvents).slice(0, MAX_FACTS);
     facts.css.selectors = unique(facts.css.selectors).slice(0, MAX_FACTS);
     facts.css.properties.read = unique(facts.css.properties.read).slice(0, MAX_FACTS);
     facts.css.properties.write = unique(facts.css.properties.write).slice(0, MAX_FACTS);
@@ -974,6 +1056,7 @@
     extractDomFacts(source, facts);
     extractStorageFacts(source, facts);
     extractNetworkFacts(source, facts);
+    extractPerformanceFacts(source, facts);
     extractCssFacts(source, facts);
     return finalizeFacts(facts);
   }
@@ -1122,12 +1205,58 @@
     return unique(conflicts);
   }
 
+  function cssPlacementConflicts(left, right) {
+    const collect = writes => {
+      const bySelector = new Map();
+      for (const item of writes || []) {
+        if (!bySelector.has(item.selector)) bySelector.set(item.selector, {});
+        bySelector.get(item.selector)[String(item.property || '').toLowerCase()] = String(item.value || '').trim().toLowerCase();
+      }
+      return [...bySelector.entries()]
+        .map(([selector, properties]) => ({ selector, properties }))
+        .filter(item => item.properties.position === 'fixed');
+    };
+    const leftPlacements = collect(left.facts.css.writes);
+    const rightPlacements = collect(right.facts.css.writes);
+    const results = [];
+    for (const a of leftPlacements) {
+      for (const b of rightPlacements) {
+        if (a.selector === b.selector) continue;
+        const horizontal = ['left', 'right'].filter(property =>
+          a.properties[property] && a.properties[property] === b.properties[property]
+        );
+        const vertical = ['top', 'bottom'].filter(property =>
+          a.properties[property] && a.properties[property] === b.properties[property]
+        );
+        if (!horizontal.length || !vertical.length) continue;
+        results.push({
+          leftSelector: a.selector,
+          rightSelector: b.selector,
+          anchors: [...horizontal, ...vertical].map(property => `${property}:${a.properties[property]}`)
+        });
+      }
+    }
+    return results.slice(0, MAX_FACTS);
+  }
+
   function networkConflicts(left, right) {
     const results = [];
     for (const channel of ['fetch', 'xhr', 'websocket']) {
       const a = left.facts.network[channel];
       const b = right.facts.network[channel];
-      if (a.patch && b.patch) results.push({ channel, kind: 'patch_patch', severity: 'high' });
+      const sharedEndpoints = intersect(a.endpointHints, b.endpointHints);
+      const changesData = Boolean(
+        (a.changesRequest || a.changesResponse || a.replacesResult) &&
+        (b.changesRequest || b.changesResponse || b.replacesResult)
+      );
+      if (a.patch && b.patch) {
+        results.push({
+          channel,
+          kind: sharedEndpoints.length && changesData ? 'same_endpoint_change' : 'patch_patch',
+          severity: sharedEndpoints.length && changesData ? 'high' : 'notice',
+          sharedEndpoints
+        });
+      }
       else if ((a.patch && b.call) || (b.patch && a.call)) results.push({ channel, kind: 'patch_call', severity: 'medium' });
     }
     const historyA = left.facts.network.history;
@@ -1137,6 +1266,24 @@
       results.push({ channel: 'history', kind: 'patch_call', severity: 'medium' });
     }
     return results;
+  }
+
+  function performanceConflicts(left, right) {
+    const a = left.facts.performance || { riskScore: 0 };
+    const b = right.facts.performance || { riskScore: 0 };
+    if ((a.riskScore || 0) < 3 || (b.riskScore || 0) < 3) return [];
+    const signals = [];
+    if (a.rapidIntervals?.length && b.rapidIntervals?.length) signals.push('양쪽 모두 250ms 이하 반복 타이머 사용');
+    if (a.broadObservers?.length && b.broadObservers?.length) signals.push('양쪽 모두 문서 전체 변경 감시');
+    if (a.repeatedDomScan && b.repeatedDomScan) signals.push('양쪽 모두 반복 작업 안에서 여러 화면 요소 검색');
+    if (a.animationLoop && b.animationLoop) signals.push('양쪽 모두 화면 프레임마다 반복 작업');
+    if (a.frequentEvents?.length && b.frequentEvents?.length) signals.push('양쪽 모두 자주 발생하는 화면 입력 감시');
+    const combinedScore = (a.riskScore || 0) + (b.riskScore || 0);
+    return [{
+      kind: 'combined_load',
+      severity: combinedScore >= 8 || signals.length >= 2 ? 'medium' : 'notice',
+      signals: signals.length ? signals : ['두 스크립트에 반복 작업이 함께 발견됨']
+    }];
   }
 
   function eventConflicts(left, right) {
@@ -1217,8 +1364,70 @@
     };
   }
 
+  function buildUserImpacts(conflicts) {
+    const impacts = [];
+    const seen = new Set();
+    const push = (type, severity, text) => {
+      if (seen.has(type)) return;
+      seen.add(type);
+      impacts.push({ type, severity, text });
+    };
+
+    for (const conflict of conflicts.selectors || []) {
+      if (conflict.kind === 'remove_vs_touch') {
+        push('missing_control', 'high', '버튼이나 메뉴가 사라지거나 눌러도 반응하지 않을 수 있습니다.');
+      } else {
+        push('screen_override', 'medium', '버튼 위치나 화면 내용이 서로 덮여 한쪽 기능을 쓰기 어려울 수 있습니다.');
+      }
+    }
+    if ((conflicts.placements || []).length) {
+      push('placement_overlap', 'medium', '버튼이나 창이 같은 위치에 겹쳐 한쪽을 누르기 어려울 수 있습니다.');
+    }
+    if ((conflicts.css || []).length) {
+      const properties = conflicts.css.map(value => String(value).slice(String(value).lastIndexOf('::') + 2));
+      if (properties.some(property => ['display', 'visibility', 'opacity', 'z-index'].includes(property))) {
+        push('hidden_screen', 'medium', '버튼이나 창이 가려지거나 보이지 않을 수 있습니다.');
+      } else if (properties.some(property => ['position', 'top', 'right', 'bottom', 'left', 'transform', 'width', 'height'].includes(property))) {
+        push('placement_overlap', 'medium', '버튼이나 창의 위치가 바뀌거나 서로 겹칠 수 있습니다.');
+      } else {
+        push('appearance_override', 'notice', '글자나 버튼의 모양이 서로 덮여 화면이 보기 어려울 수 있습니다.');
+      }
+    }
+    if ((conflicts.storage || []).length) {
+      push('settings_changed', 'medium', '설정이 풀리거나 다른 값으로 바뀌어 기능이 예상과 다르게 작동할 수 있습니다.');
+    }
+    for (const conflict of conflicts.network || []) {
+      if (conflict.channel === 'history') {
+        push('navigation_failure', 'medium', '페이지를 옮긴 뒤 버튼이나 기능이 사라질 수 있습니다.');
+      } else {
+        push('feature_failure', conflict.severity === 'high' ? 'high' : 'notice', '전송하거나 불러오는 기능이 늦게 반응하거나, 두 확장 프로그램 중 한쪽 기능이 작동하지 않을 수 있습니다.');
+      }
+    }
+    if ((conflicts.events || []).length) {
+      push('input_blocked', 'medium', '버튼을 눌러도 반응하지 않거나 단축키가 작동하지 않을 수 있습니다.');
+    }
+    if ((conflicts.performance || []).length) {
+      push('slow_page', 'medium', '둘을 함께 켜면 화면 반응이 느려지거나 스크롤이 끊길 수 있습니다.');
+    }
+
+    const severityRank = { high: 0, medium: 1, notice: 2 };
+    return impacts.sort((a, b) => (severityRank[a.severity] ?? 3) - (severityRank[b.severity] ?? 3));
+  }
+
+  function buildLimitations(conflicts) {
+    const limitations = ['코드를 실행하지 않고 살펴본 결과이므로 실제 문제가 반드시 생긴다는 뜻은 아닙니다.'];
+    const structuralNetwork = (conflicts.network || []).some(conflict =>
+      ['patch_patch', 'patch_call'].includes(conflict.kind)
+    );
+    if (structuralNetwork) limitations.push('같은 요청이나 응답을 실제로 변경하는지는 확인되지 않았습니다.');
+    if ((conflicts.performance || []).length) limitations.push('실제 느려짐 정도는 기기 성능과 열린 페이지 상태에 따라 달라질 수 있습니다.');
+    return limitations;
+  }
+
   function buildCompatibility(left, right, scope, relationship, conflicts) {
     const reasons = [];
+    const impacts = buildUserImpacts(conflicts);
+    const limitations = buildLimitations(conflicts);
     let score = 0;
 
     // 소스 전체가 정말 같은 복사본이 아닌 한, 실행 범위가 겹치지 않는 두 파일은
@@ -1231,6 +1440,8 @@
         score: 0,
         confidence: round(clamp((scope.confidence + relationship.confidence + 0.85) / 3, 0.2, 0.98)),
         reasons,
+        impacts: [],
+        limitations: [],
         gmStorageNote: 'GM 저장값은 스크립트별로 격리됩니다. 이름과 namespace가 같은 계열일 때만 저장 키 충돌 후보로 셉니다.'
       };
     }
@@ -1265,15 +1476,18 @@
       reasons.push({ type: 'storage', severity: 'medium', text: `둘 다 같은 ${channelLabel} 값을 바꾸거나 지웁니다: ${conflict.keys.slice(0, 4).join(', ')}`, evidence: conflict.keys });
     }
     for (const conflict of conflicts.network) {
+      const sameEndpointChange = conflict.kind === 'same_endpoint_change';
       const patchVsPatch = conflict.kind === 'patch_patch';
-      score += patchVsPatch ? 78 : 22;
+      score += sameEndpointChange ? 78 : patchVsPatch ? 24 : 18;
       reasons.push({
         type: 'network',
-        severity: patchVsPatch ? 'high' : 'notice',
-        text: patchVsPatch
-          ? `둘 다 ${conflict.channel} 동작을 가로채서 순서에 따라 결과가 달라질 수 있습니다.`
-          : `한쪽이 ${conflict.channel} 동작을 감싸고 다른 쪽이 사용합니다. 보통은 함께 작동하지만 문제가 생기면 확인할 근거입니다.`,
-        evidence: [conflict.channel, conflict.kind]
+        severity: sameEndpointChange ? 'high' : 'notice',
+        text: sameEndpointChange
+          ? `둘 다 ${conflict.channel}에서 같은 통신 주소의 요청이나 응답을 변경합니다: ${conflict.sharedEndpoints.slice(0, 4).join(', ')}`
+          : patchVsPatch
+            ? `둘 다 ${conflict.channel} 동작을 가로채는 코드가 감지되었습니다.`
+            : `한쪽이 ${conflict.channel} 동작을 감싸고 다른 쪽이 사용합니다.`,
+        evidence: [conflict.channel, conflict.kind, ...(conflict.sharedEndpoints || [])]
       });
     }
     if (conflicts.events.length) {
@@ -1283,6 +1497,17 @@
     if (conflicts.css.length) {
       score += 25;
       reasons.push({ type: 'css', severity: 'medium', text: `같은 요소의 같은 모양 속성을 둘 다 바꿉니다: ${conflicts.css.slice(0, 4).join(', ')}`, evidence: conflicts.css });
+    }
+    if (conflicts.placements.length) {
+      score += 48;
+      const placementEvidence = conflicts.placements.slice(0, 4).map(conflict =>
+        `${conflict.leftSelector} ↔ ${conflict.rightSelector} (${conflict.anchors.join(', ')})`
+      );
+      reasons.push({ type: 'placement', severity: 'medium', text: `서로 다른 고정 화면 요소가 같은 위치를 사용합니다: ${placementEvidence.join(' · ')}`, evidence: placementEvidence });
+    }
+    for (const conflict of conflicts.performance) {
+      score += conflict.severity === 'medium' ? 48 : 24;
+      reasons.push({ type: 'performance', severity: conflict.severity, text: `두 스크립트의 반복 작업이 함께 실행됩니다: ${conflict.signals.join(', ')}`, evidence: conflict.signals });
     }
 
     score = clamp(score, 0, 100);
@@ -1297,6 +1522,8 @@
       score,
       confidence: round(clamp((scope.confidence + relationship.confidence + (reasons.length ? 0.75 : 0.45)) / 3, 0.2, 0.98)),
       reasons,
+      impacts,
+      limitations,
       gmStorageNote: 'GM 저장값은 스크립트별로 격리됩니다. 이름과 namespace가 같은 계열일 때만 저장 키 충돌 후보로 셉니다.'
     };
   }
@@ -1306,6 +1533,7 @@
   }
 
   function buildRecommendation(left, right, relationship, compatibility) {
+    const impactSummary = (compatibility.impacts || []).slice(0, 2).map(impact => impact.text).join(' ');
     const base = {
       action: 'keep_both',
       headline: '둘 다 켜도 됩니다',
@@ -1397,7 +1625,7 @@
         ...base,
         action: 'disable_one',
         headline: '둘 중 하나를 꺼 두는 편이 안전합니다',
-        summary: compatibility.reasons[0]?.text || '같은 부분을 서로 다르게 건드릴 수 있습니다.',
+        summary: impactSummary || '함께 켜면 한쪽 기능이 제대로 작동하지 않을 수 있습니다.',
         steps: ['문제가 생기는 페이지에서 둘 중 하나를 끕니다.', '새로고침한 뒤 문제가 사라지는지 확인합니다.', '필요하면 반대로 바꿔서 더 필요한 쪽을 남깁니다.'],
         keepIds: [], disableIds: [], deleteIds: [],
         caution: '자동으로 삭제할 만큼 같은 파일이라는 뜻은 아닙니다.'
@@ -1408,8 +1636,19 @@
         ...base,
         action: 'test_together',
         headline: '같이 쓸 수 있지만 이상하면 하나씩 꺼 보세요',
-        summary: compatibility.reasons[0]?.text || '같은 부분을 건드리는 흔적이 있습니다.',
-        steps: ['지금 잘 작동한다면 그대로 써도 됩니다.', '버튼이 두 번 눌리거나 화면이 사라지면 한쪽을 끕니다.', '새로고침해서 문제가 사라지는지 확인합니다.']
+        summary: impactSummary || '함께 사용할 때 일부 기능이 예상과 다르게 작동할 수 있습니다.',
+        steps: ['지금 잘 작동한다면 그대로 써도 됩니다.', '위와 같은 증상이 생기면 둘 중 하나를 잠시 끕니다.', '새로고침해서 문제가 사라지는지 확인합니다.'],
+        caution: '실제 문제가 확인된 것은 아니므로 증상이 없으면 당장 끌 필요는 없습니다.'
+      };
+    }
+    if (compatibility.verdict === 'probably_compatible' && impactSummary) {
+      return {
+        ...base,
+        action: 'test_together',
+        headline: '같이 쓸 수 있지만 해당 기능을 확인해 보세요',
+        summary: impactSummary,
+        steps: ['지금 잘 작동한다면 그대로 써도 됩니다.', '위와 같은 증상이 생기면 둘 중 하나를 잠시 끄고 새로고침합니다.'],
+        caution: '코드에서 가능성을 찾은 것이며 실제 문제가 확인된 것은 아닙니다.'
       };
     }
     return base;
@@ -1428,7 +1667,9 @@
       storage: storageConflicts(left, right, family),
       network: networkConflicts(left, right),
       events: eventConflicts(left, right),
-      css: cssConflicts(left, right)
+      css: cssConflicts(left, right),
+      placements: cssPlacementConflicts(left, right),
+      performance: performanceConflicts(left, right)
     };
     const compatibility = buildCompatibility(left, right, scope, relationship, conflicts);
     const recommendation = buildRecommendation(left, right, relationship, compatibility);

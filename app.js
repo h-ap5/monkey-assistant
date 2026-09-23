@@ -531,7 +531,7 @@
 
   function pairHasRuntimeConflict(pair) {
     const conflicts = pair.conflicts || {};
-    return ['selectors', 'storage', 'network', 'events', 'css']
+    return ['selectors', 'storage', 'network', 'events', 'css', 'placements', 'performance']
       .some(key => Array.isArray(conflicts[key]) && conflicts[key].length > 0);
   }
 
@@ -599,8 +599,9 @@
 
     const reasonTexts = (pair.compatibility.reasons || []).map(reason => reason.text);
     const evidence = uniq([
-      ...(relation.evidence || []),
       ...reasonTexts,
+      ...(pair.compatibility?.limitations || []),
+      ...(relation.evidence || []),
       ...(pair.scope?.evidence || [])
     ]);
     const scoreFloor = { exact: .99, update: .91, variant: .88, conflict: .72, overlap: .45 }[type] || .4;
@@ -1048,6 +1049,7 @@
 결정론적 분석 결과의 관계 분류와 행동 권장을 임의로 뒤집지 않는다. 특히 변형판이나 기능 포크를 구버전이라는 이유만으로 삭제하라고 하지 않는다.
 삭제를 바로 지시하지 말고, 먼저 비활성화 후 실제 사이트 동작을 확인하도록 권한다.
 응답은 한국어 Markdown으로 작성하며 모바일 채팅창에서 읽기 쉽게 구성한다.
+충돌을 설명할 때는 버튼이 안 보임, 클릭이 안 됨, 기능이 작동하지 않음, 화면이 느려짐처럼 실제로 겪을 수 있는 현상을 먼저 말한다. fetch, XHR, 선택자 같은 코드 용어는 사용자가 기술적 근거를 요청했을 때만 설명한다. 근거가 없는 증상을 지어내지 않고, 가능성과 확인된 사실을 구분한다.
 - 첫 줄은 반드시 “## 결론” 또는 질문에 맞는 짧은 2단계 제목으로 시작한다.
 - 긴 벽글을 쓰지 말고 2~4개 짧은 섹션과 목록으로 나눈다.
 - 스크립트 이름은 **굵게** 표시한다.
@@ -1351,7 +1353,7 @@ ${getToneInstruction(state.settings.tone, state.settings.intensity, state.settin
     }
 
     if (/충돌|위험|문제/.test(q)) {
-      if (!conflicts.length) return '화면 요소 삭제·공유 저장값 수정·통신 가로채기처럼 직접 부딪히는 동작은 찾지 못했습니다. 이것은 “절대 안전”이 아니라 “정적 코드에서 뚜렷한 충돌을 못 찾음”이라는 뜻입니다.';
+      if (!conflicts.length) return '함께 켰을 때 버튼이 사라지거나, 클릭이 막히거나, 기능이 작동하지 않을 뚜렷한 단서는 찾지 못했습니다. 다만 실제 실행까지 확인한 것은 아니므로 문제가 생기면 하나씩 꺼서 비교해 보세요.';
       return `## 먼저 하나씩 꺼 볼 후보\n${conflicts.slice(0,8).map(adviceLine).join('\n')}\n\n문제가 생기는 화면에서 하나만 끄고 새로고침하면 원인 후보를 가장 쉽게 좁힐 수 있습니다.`;
     }
 
